@@ -1,0 +1,14 @@
+[Unit]
+Description=RSI Stock Alert System
+After=network.target
+
+[Service]
+Restart=always
+RestartSec=5
+WorkingDirectory=/opt/rsi-alerts
+EnvironmentFile=/opt/rsi-alerts/.env
+ExecStart=/usr/bin/python3 main.py
+User=rsi
+
+[Install]
+WantedBy=multi-user.target

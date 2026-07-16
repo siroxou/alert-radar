@@ -1,0 +1,18 @@
+.env
+state.json
+snapshot.json
+alerts.log*
+*.db
+*.db-shm
+*.db-wal
+market_alerts.db
+data/
+__pycache__/
+# local MCP configs (may contain API keys — never commit)
+.mcp-config.json
+resend_mcp_config.json
+.venv/
+*.pyc
+
+
+

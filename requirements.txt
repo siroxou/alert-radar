@@ -1,0 +1,4 @@
+requests
+fastapi
+uvicorn[standard]
+# Resend (email) and Massive (market data) are called over REST via `requests` (no SDKs needed).
