@@ -168,6 +168,7 @@
     <nav id="side-nav" class="flex flex-col gap-5" aria-label="Primary"></nav>
     <div class="mt-auto clay-sm p-4 text-xs font-bold" style="color:var(--ink2)">
       <div class="flex items-center gap-2 mb-1" id="side-docs"></div>
+      <div class="flex items-center gap-2 mb-1" id="side-github"></div>
       <p class="font-semibold">v2 · rules engine + email delivery</p>
     </div>
   </aside>
@@ -376,6 +377,10 @@
                 <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--mint-soft);color:var(--mint)" data-icon="book"></span>
                 <span><span class="font-extrabold group-hover:underline">API reference</span><span class="sub block">Interactive OpenAPI docs for every endpoint</span></span>
               </a>
+              <a href="https://github.com/siroxou" target="_blank" rel="noopener" class="flex items-center gap-3 group mt-4">
+                <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--violet-soft);color:var(--violet-deep)" data-icon="github"></span>
+                <span><span class="font-extrabold group-hover:underline">GitHub</span><span class="sub block">github.com/siroxou — source &amp; profile</span></span>
+              </a>
               <div class="flex items-center gap-3 mt-4 opacity-70">
                 <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--sky-soft);color:var(--sky)" data-icon="zap"></span>
                 <span><span class="font-extrabold">Webhooks &amp; API keys</span> <span class="chip chip-amber ml-1">Coming soon</span><span class="sub block">Push alert events to your own endpoints</span></span>
@@ -477,6 +482,7 @@ const I = {
   db:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
   eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
+  github:'<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>',
 };
 const svg = (n, cls = 'w-5 h-5') =>
   `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
@@ -1006,6 +1012,7 @@ async function poll() {
   el('history-empty-icon').innerHTML = svg('clock', 'w-7 h-7');
   el('bt-icon').innerHTML = svg('flask', 'w-6 h-6');
   el('side-docs').innerHTML = `${svg('book', 'w-4 h-4')}<a href="/docs" target="_blank" rel="noopener" class="hover:underline">API reference</a>`;
+  el('side-github').innerHTML = `${svg('github', 'w-4 h-4')}<a href="https://github.com/siroxou" target="_blank" rel="noopener" class="hover:underline">github.com/siroxou</a>`;
   document.querySelectorAll('[data-icon]').forEach((n) => { n.innerHTML = svg(n.dataset.icon, 'w-6 h-6'); });
 })();
 renderNav();
