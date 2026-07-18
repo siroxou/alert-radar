@@ -31,6 +31,7 @@ Define your own rules — *"email me when NVDA's 5-minute RSI drops below 15"* �
 - [Local AI](#local-ai-optional)
 - [API reference](#api-reference)
 - [Testing](#testing)
+- [Performance](#performance)
 - [Deployment](#deployment)
 - [Project structure](#project-structure)
 - [Roadmap](#roadmap)
@@ -60,6 +61,12 @@ The result is a single Python process that runs a monitoring loop, persists ever
 **Settings** — editable recipients, delivery status, and data-source config
 ![Settings](docs/screenshots/settings.png)
 
+**Local AI — rule builder** — describe an alert in plain English; an in-process model drafts and pre-fills the whole rule (grammar-constrained, then validated)
+![AI rule builder](docs/screenshots/ai-rule-builder.png)
+
+**Local AI — insights summary** — a natural-language read on your recent firing patterns
+![AI insights](docs/screenshots/ai-insights.png)
+
 </div>
 
 ## Features
@@ -88,6 +95,7 @@ flowchart LR
         API[REST API<br/>Pydantic-validated]
         LOOP[Eval loop thread<br/>every 30s]
         WATCH[Dead-man's switch<br/>heartbeat check]
+        AI[Local LLM · in-process<br/>Qwen2.5 via llama.cpp<br/>optional, fail-open]
     end
     DATA[Massive API<br/>market data]
     MAIL[Resend<br/>email]
@@ -103,6 +111,7 @@ flowchart LR
     LOOP -->|on fire| MAIL
     LOOP --> SNAP
     WATCH -.->|on staleness| MAIL
+    API -.->|NL rule + insights| AI
 ```
 
 **Separation of concerns:**
@@ -241,6 +250,19 @@ python test_all.py
 ```
 
 A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, CRUD, the dedup state machine, the notifier gating, a full engine cycle, recipient resolution, backtest/watchlist, and the local-AI parse/summary (stubbed — no model or network). **9/9 passing.**
+
+## Performance
+
+**Local AI** — measured in-process on CPU with the model warm (cached). A 6-prompt suite spanning every condition type (RSI, RSI-band, price, %-change, MA-cross); each generation is grammar-constrained and re-validated by `conditions.validate()`:
+
+| Model | First-run download | Load (mmap, cached) | Rule parse — median (range) | Insights summary | Accuracy |
+|-------|--------------------|---------------------|-----------------------------|------------------|----------|
+| **Qwen2.5-1.5B** (default) | ~1.1 GB, one-time | 0.7s | **0.71s** (0.59–1.76s) | 0.6s | **6/6** |
+| Qwen2.5-0.5B (low-RAM) | ~0.4 GB, one-time | 0.2s | **0.55s** (0.44–1.79s) | 0.3s | **6/6** |
+
+The GGUF is memory-mapped and the model stays resident after the first request, so steady-state parses are **sub-second on CPU**. The only slow step is the one-time model download on first use — everything after runs fully offline. The 1.5B is the default for best disambiguation (e.g. it maps *"hits either 20 or 80"* to `rsi_band` where the 0.5B falls back to plain `rsi`); the 0.5B trades a little quality for ~half the size and latency. *(Numbers depend on hardware; measured on an Apple-silicon laptop.)*
+
+**Alert engine** — each cycle fetches every `(symbol, timeframe)` once (cached), runs pure-Python indicators, dedups via the SQLite state machine, and writes an **atomic** `snapshot.json`; the dashboard polls that snapshot every 3s. Rules are evaluated every `REFRESH_SECONDS` (default 30s) during market hours — no per-request market-data calls, so the UI stays instant regardless of rule count.
 
 ## Deployment
 

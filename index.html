@@ -1094,6 +1094,8 @@ async function loadEverything() {
   try {
     await loadEverything();
     if (!location.search.includes('noboard')) openOnboard(false);
+    const _compose = new URLSearchParams(location.search).get('compose');  // deep-link: open + AI-draft an alert
+    if (_compose && META && META.ai_enabled) { openModal(); el('ai-text').value = _compose; el('ai-generate').click(); }
   } catch (e) {
     toast('Cannot reach the API — retrying…', false);
   }
