@@ -275,6 +275,13 @@
           <h1 class="page-title">Insights</h1>
           <p class="sub">What your rules have been doing.</p>
         </div>
+        <div id="ai-insights-card" hidden class="clay p-5 mb-6 flex items-start gap-3">
+          <span class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0" style="background:var(--violet-soft);color:var(--violet-deep)" id="ai-insights-icon"></span>
+          <div class="min-w-0 flex-1">
+            <p class="text-xs font-extrabold mb-1" style="color:var(--violet-deep)">AI SUMMARY <span class="font-bold normal-case" style="color:var(--ink2)">· local</span></p>
+            <p id="ai-insights-text" class="font-bold" style="color:var(--ink)">…</p>
+          </div>
+        </div>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div class="clay p-6">
             <h2 class="section-title">Alerts by symbol</h2>
@@ -413,6 +420,14 @@
       <button id="modal-close" class="icon-btn" aria-label="Close dialog"></button>
     </div>
     <form id="rule-form" class="flex flex-col gap-4">
+      <div id="ai-gen" hidden class="clay-sm p-3">
+        <p class="text-xs font-extrabold flex items-center gap-1.5" style="color:var(--violet-deep)"><span id="ai-spark"></span>DESCRIBE IT — LOCAL AI FILLS THE FORM</p>
+        <div class="flex gap-2 mt-2">
+          <input id="ai-text" class="field flex-1" placeholder="e.g. email me when NVDA 5-min RSI drops below 15" />
+          <button type="button" id="ai-generate" class="btn-primary shrink-0 justify-center">Generate</button>
+        </div>
+        <p id="ai-hint" class="sub text-xs mt-2">AI drafts the fields below — review, then save. Runs on your machine.</p>
+      </div>
       <input type="hidden" id="f-id" />
       <label class="text-xs font-extrabold" style="color:var(--ink2)">NAME
         <input id="f-name" required class="field mt-1.5" placeholder="e.g. NVDA dip alert" /></label>
@@ -483,6 +498,7 @@ const I = {
   eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
   github:'<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>',
+  sparkles:'<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
 };
 const svg = (n, cls = 'w-5 h-5') =>
   `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
@@ -549,6 +565,7 @@ function route() {
   document.title = `${TITLES[currentPage]} · Alert Radar`;
   if (currentPage === 'watchlist') renderWatchlist();
   if (currentPage === 'backtest') setupBacktest();
+  if (currentPage === 'insights') renderAiInsights();
   if (!firstRoute) el('main').focus({ preventScroll: true });
   firstRoute = false;
   window.scrollTo(0, 0);
@@ -680,6 +697,20 @@ function renderCharts() {
   ch.innerHTML = `<div class="flex items-end gap-[3px] h-24">${byHour.map((n, h) =>
     `<div class="hour-col ${n ? '' : 'zero'}" style="height:${n ? Math.max(12, (n / hmax) * 100) : 4}%" title="${String(h).padStart(2, '0')}:00 — ${n} alert${n === 1 ? '' : 's'}"></div>`).join('')}</div>`;
   ch.setAttribute('aria-label', alerts.length ? 'Column chart, alerts by hour of day. Peak hour: ' + String(byHour.indexOf(Math.max(...byHour))).padStart(2, '0') + ':00.' : 'No alert data yet');
+}
+
+/* ================= AI insights summary ================= */
+async function renderAiInsights() {
+  const card = el('ai-insights-card');
+  if (!(META && META.ai_enabled)) { card.hidden = true; return; }
+  card.hidden = false;
+  el('ai-insights-text').textContent = 'Generating a summary of your alert activity…';
+  try {
+    const r = await api('/api/ai/insights-summary');
+    el('ai-insights-text').textContent = r.summary;
+  } catch {
+    card.hidden = true;  // soft-hide if local AI isn't available
+  }
 }
 
 /* ================= watchlist ================= */
@@ -891,6 +922,9 @@ function openModal(rule = null) {
   if (!META) { toast('Connecting to the API — try again in a moment', false); return; }
   lastFocus = document.activeElement;
   el('form-error').hidden = true;
+  el('ai-gen').hidden = !(META && META.ai_enabled);
+  el('ai-text').value = '';
+  el('ai-hint').textContent = 'AI drafts the fields below — review, then save. Runs on your machine.';
   el('modal-title').textContent = rule ? 'Edit Alert' : 'New Alert';
   el('f-id').value = rule ? rule.id : '';
   el('f-name').value = rule ? rule.name : '';
@@ -945,6 +979,28 @@ el('wl-refresh').addEventListener('click', renderWatchlist);
 el('bt-type').addEventListener('change', (e) => buildParams(e.target.value, {}, 'bt-params'));
 el('bt-form').addEventListener('submit', runBacktest);
 el('recip-form').addEventListener('submit', saveRecipients);
+el('ai-generate').addEventListener('click', async () => {
+  const text = el('ai-text').value.trim();
+  if (!text) { el('ai-text').focus(); return; }
+  const btn = el('ai-generate'), hint = el('ai-hint'), label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Thinking…';
+  hint.textContent = 'Generating locally — first run loads the model, which can take a moment…';
+  try {
+    const d = await api('/api/ai/parse-rule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    el('f-name').value = d.name || '';
+    el('f-symbol').value = d.symbol || '';
+    el('f-timeframe').value = d.timeframe;
+    el('f-type').value = d.condition.type;
+    buildParams(d.condition.type, d.condition);
+    hint.textContent = 'Drafted from your description — review the fields and save.';
+    toast('Rule drafted from your description');
+  } catch (err) {
+    hint.textContent = 'Couldn’t generate: ' + err.message;
+    toast('AI: ' + err.message, false);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+});
 
 el('rule-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1011,6 +1067,8 @@ async function poll() {
   el('alerts-empty-icon').innerHTML = svg('bell', 'w-7 h-7');
   el('history-empty-icon').innerHTML = svg('clock', 'w-7 h-7');
   el('bt-icon').innerHTML = svg('flask', 'w-6 h-6');
+  el('ai-spark').innerHTML = svg('sparkles', 'w-3.5 h-3.5');
+  el('ai-insights-icon').innerHTML = svg('sparkles', 'w-5 h-5');
   el('side-docs').innerHTML = `${svg('book', 'w-4 h-4')}<a href="/docs" target="_blank" rel="noopener" class="hover:underline">API reference</a>`;
   el('side-github').innerHTML = `${svg('github', 'w-4 h-4')}<a href="https://github.com/siroxou" target="_blank" rel="noopener" class="hover:underline">github.com/siroxou</a>`;
   document.querySelectorAll('[data-icon]').forEach((n) => { n.innerHTML = svg(n.dataset.icon, 'w-6 h-6'); });
@@ -1030,6 +1088,7 @@ async function loadEverything() {
   // a page deep-linked/reloaded before META was ready needs its loader re-run now
   if (currentPage === 'backtest') setupBacktest();
   if (currentPage === 'watchlist') renderWatchlist();
+  if (currentPage === 'insights') renderAiInsights();
 }
 (async () => {
   try {

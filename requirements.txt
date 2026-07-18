@@ -2,3 +2,8 @@ requests
 fastapi
 uvicorn[standard]
 # Resend (email) and Massive (market data) are called over REST via `requests` (no SDKs needed).
+
+# Local AI (optional) — embedded Qwen2.5-Instruct inference; auto-downloads the GGUF on first use.
+# Everything fails open, so the app runs fine even if these aren't installed.
+llama-cpp-python
+huggingface_hub

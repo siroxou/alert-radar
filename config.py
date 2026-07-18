@@ -60,3 +60,11 @@ OVERBOUGHT = int(os.environ.get("OVERBOUGHT", 85))
 DB_FILE = ROOT / "data" / "market_alerts.db"  # dir aligns with the docker-compose volume
 SNAPSHOT_FILE = ROOT / "snapshot.json"
 LOG_FILE = ROOT / "alerts.log"
+
+# --- Local AI (optional, in-process via llama-cpp-python) ---
+# Qwen2.5-1.5B-Instruct (Apache-2.0) — small, fast, strong at structured JSON. The GGUF is
+# auto-downloaded to MODELS_DIR on first use; everything fails open if the model/lib is absent.
+AI_ENABLED = _env_bool("AI_ENABLED", True)
+AI_MODEL_REPO = os.environ.get("AI_MODEL_REPO", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
+AI_MODEL_FILE = os.environ.get("AI_MODEL_FILE", "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+MODELS_DIR = ROOT / "models"

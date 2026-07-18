@@ -15,6 +15,7 @@ config.DB_FILE = _TMP / "test.db"
 config.SNAPSHOT_FILE = _TMP / "snapshot.json"
 config.DRY_RUN = True  # forces notifier into dry-run (logs, never sends)
 
+import ai
 import conditions
 import db
 import engine
@@ -178,13 +179,48 @@ def test_backtest_and_watchlist():
     print(f"  ✓ backtest/watchlist OK (1 fire over 59 bars, {len(wl)} symbols)")
 
 
+def test_ai():
+    print("Testing ai.py (local NL rule builder + insights, stubbed inference)...")
+
+    class FakeLLM:
+        def __init__(self, content):
+            self._content = content
+
+        def create_chat_completion(self, **kwargs):  # ignores schema/messages, returns canned text
+            return {"choices": [{"message": {"content": self._content}}]}
+
+    # parse_rule maps a canned JSON completion to a rule dict conditions.validate() accepts
+    ai._load_failed = False
+    ai._llm = FakeLLM('{"name":"NVDA 5m RSI oversold","symbol":"nvda","timeframe":"5min",'
+                      '"condition":{"type":"rsi","period":14,"threshold":15,"direction":"below"}}')
+    draft = ai.parse_rule("email me when NVDA 5 minute RSI drops below 15")
+    assert draft["symbol"] == "NVDA" and draft["timeframe"] == "5min", draft
+    conditions.validate(draft["condition"])  # must not raise
+
+    # summarize_insights returns the model text
+    ai._llm = FakeLLM("SPY has been the most active, firing 6 times near the open.")
+    assert "SPY" in ai.summarize_insights({"total": 6, "by_symbol": {"SPY": 6}, "most_active": "SPY"})
+
+    # fail-open: no model + not loadable -> AIUnavailable (never crashes the caller)
+    ai._llm = None
+    ai._load_failed = True
+    for fn in (lambda: ai.parse_rule("x"), lambda: ai.summarize_insights({})):
+        try:
+            fn(); raise AssertionError("expected AIUnavailable")
+        except ai.AIUnavailable:
+            pass
+    ai._llm = None
+    ai._load_failed = False
+    print("  ✓ ai OK (parse_rule validates, summary returns text, fails open)")
+
+
 def main():
     print("=" * 60)
     print("Market Alert System — comprehensive tests (v2)")
     print("=" * 60)
     tests = [test_config, test_indicators, test_conditions, test_db,
              test_notifier_dry_run, test_engine_cycle,
-             test_settings_recipients, test_backtest_and_watchlist]
+             test_settings_recipients, test_backtest_and_watchlist, test_ai]
     passed = failed = 0
     for t in tests:
         try:

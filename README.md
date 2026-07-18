@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-8%2F8%20passing-2ea44f)
+![Tests](https://img.shields.io/badge/tests-9%2F9%20passing-2ea44f)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-3-blue)
 ![License](https://img.shields.io/badge/license-MIT-black)
 
@@ -28,6 +28,7 @@ Define your own rules — *"email me when NVDA's 5-minute RSI drops below 15"* �
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
+- [Local AI](#local-ai-optional)
 - [API reference](#api-reference)
 - [Testing](#testing)
 - [Deployment](#deployment)
@@ -68,6 +69,7 @@ The result is a single Python process that runs a monitoring loop, persists ever
 - **Live dashboard** — create / edit / pause / delete rules, watch live indicator values, and see a *"triggered X ago"* counter tick in real time on every alert.
 - **Watchlist** — live price and RSI for every watched symbol across all timeframes, color-coded oversold/overbought.
 - **Backtesting** — replay any condition over the recent lookback window and get fire count, fire rate, and the exact bars where it triggered.
+- **Local AI (optional)** — describe an alert in plain English and an *in-process* model (Qwen2.5, no cloud or API keys) drafts the rule; plus an AI narrative of your firing patterns on the Insights page. Runs on your machine, fully offline, and fails open.
 - **Dead-man's switch** — if the evaluation loop stops completing healthy cycles, you get an email *and* the dashboard shows a "Monitor stalled" badge. You find out when the monitor breaks — not when you miss a trade.
 - **Guided onboarding** — a short first-run flow to set your alert email and create a first rule.
 - **Dry-run mode** — every notification path can log instead of send, so you can develop and test safely.
@@ -114,6 +116,7 @@ flowchart LR
 | `db.py` | SQLite persistence — rules, dedup state, alert history, settings |
 | `notifier.py` | Resend email rendering + dead-man's-switch alert |
 | `engine.py` | Evaluation loop, snapshot writer, watchlist & backtest |
+| `ai.py` | Optional in-process LLM (Qwen2.5 via llama.cpp) — NL→rule + insights summary |
 | `main.py` | FastAPI app, Pydantic request models, routes, lifespan |
 | `index.html` | No-build single-page dashboard |
 
@@ -148,6 +151,7 @@ Things in here I'm happy with — and would happily walk through in an interview
 - **Dead-man's switch.** A heartbeat timestamp is refreshed on every healthy cycle; if it goes stale the process emails an ops warning and the UI flips to a "Monitor stalled" state. Silent failure is the worst failure mode for an alerting system, so this is designed in.
 - **Validated trust boundary.** Untrusted rule payloads are validated by Pydantic models at the HTTP edge (unknown condition types, bad timeframes, and retired channels are rejected with `422`) before anything reaches the engine.
 - **No-build frontend.** The dashboard is a single hand-written HTML file — Tailwind via CDN, inline SVG icons, a hash router, and a 3-second snapshot poll. Claymorphism design, fully responsive, accessible (skip links, ARIA labels, reduced-motion support), zero npm toolchain.
+- **Optional local LLM, in-process.** A quantized Qwen2.5 model (`llama-cpp-python`) turns plain-English requests into rules with **grammar-constrained decoding** (guaranteed-valid JSON, then validated by the same registry) and narrates the Insights page — no cloud, no API keys, and fully fail-open so the app runs unchanged without it.
 
 ## Tech stack
 
@@ -159,6 +163,7 @@ Things in here I'm happy with — and would happily walk through in an interview
 | Market data | **Massive** (formerly Polygon.io) | Real-time OHLC aggregates |
 | Email | **Resend** | Simple REST API, domain verification, great deliverability |
 | Frontend | **Vanilla JS + Tailwind (CDN)** | No build step; a single deployable HTML file |
+| Local AI | **Qwen2.5 (GGUF) + llama.cpp** | In-process, offline, grammar-constrained JSON — no cloud, no keys |
 | Tests | **stdlib `assert`** | One dependency-free suite, no framework needed |
 
 ## Getting started
@@ -196,8 +201,21 @@ All configuration is via environment variables (loaded from `.env`):
 | `DASHBOARD_PORT` | Web dashboard port | `8000` |
 | `REFRESH_SECONDS` | Evaluation interval | `30` |
 | `DEADMAN_SECONDS` | Dead-man's-switch staleness window | `max(300, refresh×6)` |
+| `AI_ENABLED` | Enable the local NL rule builder + insights summary | `true` |
+| `AI_MODEL_REPO` / `AI_MODEL_FILE` | Hugging Face GGUF repo + file (swap to the 0.5B variant for low-RAM) | Qwen2.5-1.5B GGUF |
 
 > Recipients resolve per alert in priority order: **rule override → saved Settings → `.env` default**, so you can change where alerts go from the dashboard without a restart.
+
+## Local AI (optional)
+
+Two features run a small language model **in-process** — no cloud, no API keys, no separate server:
+
+- **Natural-language rule builder** — in the New Alert dialog, type *"email me when NVDA's 5-minute RSI drops below 15"* and the model drafts a structured rule. Output is **grammar-constrained JSON**, then validated by the same `conditions.validate()` the manual form uses, and pre-fills the form for you to review and save.
+- **Insights summary** — a 1–2 sentence natural-language read on your recent firing patterns at the top of the Insights page (cached until a new alert fires).
+
+**Model:** [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF) (Apache-2.0, GGUF) via [`llama-cpp-python`](https://github.com/abetlen/llama-cpp-python). It's **auto-downloaded** to `models/` on first use (~1.1 GB), then runs fully offline on CPU. Set `AI_MODEL_REPO`/`AI_MODEL_FILE` to the [0.5B variant](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) for low-RAM machines.
+
+Everything **fails open**: if `llama-cpp-python` isn't installed or the download fails, the app runs exactly as it does without AI and the AI controls simply hide. Toggle with `AI_ENABLED`.
 
 ## API reference
 
@@ -213,6 +231,8 @@ Interactive OpenAPI docs are served at `/docs`.
 | `GET` `PUT` | `/api/settings` | Read / set alert recipients |
 | `GET` | `/api/watchlist` | Price + RSI grid across symbols × timeframes |
 | `POST` | `/api/backtest` | Replay a condition over recent bars |
+| `POST` | `/api/ai/parse-rule` | Plain English → validated rule draft (local model) |
+| `GET` | `/api/ai/insights-summary` | Local-AI narrative of recent firing patterns |
 
 ## Testing
 
@@ -220,7 +240,7 @@ Interactive OpenAPI docs are served at `/docs`.
 python test_all.py
 ```
 
-A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, CRUD, the dedup state machine, the notifier gating, a full engine cycle, recipient resolution, and backtest/watchlist. **8/8 passing.**
+A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, CRUD, the dedup state machine, the notifier gating, a full engine cycle, recipient resolution, backtest/watchlist, and the local-AI parse/summary (stubbed — no model or network). **9/9 passing.**
 
 ## Deployment
 
@@ -242,6 +262,7 @@ docker compose up -d      # loads .env, persists SQLite in ./data/
 alert-radar/
 ├── main.py              # FastAPI app, routes, request validation, lifespan
 ├── engine.py            # eval loop, dead-man's switch, watchlist, backtest
+├── ai.py                # optional local LLM (Qwen2.5 via llama.cpp) — NL rules + insights
 ├── conditions.py        # extensible condition registry
 ├── rsi.py               # pure-Python indicators (RSI, SMA, EMA, %-change)
 ├── db.py                # SQLite persistence (WAL, thread-safe)
@@ -249,7 +270,7 @@ alert-radar/
 ├── massive_client.py    # market-data REST client
 ├── config.py            # env + settings
 ├── index.html           # single-file dashboard SPA
-├── test_all.py          # dependency-free test suite (8/8)
+├── test_all.py          # dependency-free test suite (9/9)
 ├── Dockerfile · docker-compose.yml · deploy/rsi-alerts.service
 └── .env.example
 ```
