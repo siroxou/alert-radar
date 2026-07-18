@@ -1027,11 +1027,14 @@ async function loadEverything() {
   try { settingsCache = await api('/api/settings'); } catch { settingsCache = { email_recipients: [] }; }
   renderSettings();
   await refreshRules();
+  // a page deep-linked/reloaded before META was ready needs its loader re-run now
+  if (currentPage === 'backtest') setupBacktest();
+  if (currentPage === 'watchlist') renderWatchlist();
 }
 (async () => {
   try {
     await loadEverything();
-    openOnboard(false);
+    if (!location.search.includes('noboard')) openOnboard(false);
   } catch (e) {
     toast('Cannot reach the API — retrying…', false);
   }

@@ -11,6 +11,8 @@ __pycache__/
 # local MCP configs (may contain API keys — never commit)
 .mcp-config.json
 resend_mcp_config.json
+# local editor / tooling
+.claude/
 .venv/
 *.pyc
 
