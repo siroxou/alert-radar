@@ -305,9 +305,22 @@ Required environment variables:
 vercel deploy --prod
 ```
 
-> **Cron cadence is plan-bound.** `vercel.json` ships `*/5 * * * *`, which needs a **Pro** plan. Hobby accounts are capped at **one cron per day** and will fail the deployment with a more-frequent expression — change it to something like `0 14 * * *` on Hobby, and be aware that a once-daily monitor is a status page, not an alerting system.
->
-> A cron-driven dead-man's switch cannot detect its *own* trigger failing, so `healthy` is computed when the snapshot is read rather than when it is written — a stalled cron shows up the moment anyone opens the dashboard. For genuine coverage, also point an external uptime monitor at the deployment.
+#### Driving the evaluation cycle for free
+
+Vercel's Hobby plan caps cron at **once per day**, which cannot drive an alerting system — and a more frequent expression in `vercel.json` fails the deployment outright. So `vercel.json` ships **no cron at all**. `GET /api/cron/evaluate` accepts any caller holding `CRON_SECRET`, which means the scheduler can live anywhere:
+
+| Trigger | Cadence | Cost | Notes |
+|---|---|---|---|
+| **External pinger** (cron-job.org, Cloudflare Worker Cron) | **1 min** | Free | Most reliable free option. Send `Authorization: Bearer $CRON_SECRET`. |
+| **GitHub Actions** (`.github/workflows/evaluate.yml`, included) | 5 min, best-effort | Free | Zero signup, but GitHub delays scheduled runs at peak and disables them after 60 days of repo inactivity. |
+| **Vercel Cron** | 1 min | Pro plan | Add a `crons` entry back to `vercel.json`. |
+| **Always-on Docker/systemd** | 30 s | Free on your own box | The original path — still the most responsive. |
+
+For the included workflow, set two repository secrets: `ALERT_RADAR_URL` (your deployment URL) and `CRON_SECRET` (matching the Vercel env var).
+
+> A cron-driven dead-man's switch cannot detect its *own* trigger failing, so `healthy` is computed when the snapshot is **read**, not when it is written — a stalled scheduler shows up the moment anyone opens the dashboard. For real coverage, also point an external uptime monitor at the deployment.
+
+> **Use a pooled connection string.** Every request is a fresh process, so `DATABASE_URL` should point at a transaction pooler (Supabase/Supavisor port `6543`) rather than the direct `5432` port, or connections exhaust quickly.
 
 ## Project structure
 

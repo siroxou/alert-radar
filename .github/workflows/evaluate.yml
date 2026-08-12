@@ -1,0 +1,42 @@
+name: Evaluate alert rules
+
+# Vercel's Hobby plan caps cron at ONCE PER DAY, which cannot drive an alerting
+# system. The evaluation endpoint accepts any caller that knows CRON_SECRET, so
+# the scheduler does not have to be Vercel's — this drives it from Actions for free.
+#
+# Honest caveat: GitHub only guarantees "best effort" for scheduled workflows.
+# Five minutes is the minimum interval, and runs are frequently delayed at peak
+# times. GitHub also disables schedules on repos with no activity for 60 days.
+# For a dependable ~1-minute cadence use an external pinger instead (see README).
+
+on:
+  schedule:
+    # every 5 minutes, weekdays, 13:00-21:00 UTC — covers 9:30-16:00 ET in both
+    # EST and EDT. Outside market hours the endpoint idles cheaply anyway.
+    - cron: "*/5 13-21 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: evaluate
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger an evaluation cycle
+        env:
+          URL: ${{ secrets.ALERT_RADAR_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::error::Set the ALERT_RADAR_URL and CRON_SECRET repository secrets."
+            exit 1
+          fi
+          code=$(curl -sS -o body.txt -w '%{http_code}' --max-time 60 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${URL%/}/api/cron/evaluate")
+          echo "HTTP $code"; cat body.txt; echo
+          # fail loudly: a silent non-200 here is a monitor that has quietly stopped
+          [ "$code" = "200" ]

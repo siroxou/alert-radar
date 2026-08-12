@@ -47,6 +47,11 @@ def _db(write=False):
         from psycopg.rows import dict_row
 
         conn = psycopg.connect(config.DATABASE_URL, row_factory=dict_row, connect_timeout=10)
+        # Serverless means a new connection per request, so the DSN should point at a
+        # transaction pooler (Supabase/Supavisor port 6543, pgbouncer, …). Those do not
+        # support prepared statements, and psycopg auto-prepares a query after the 5th
+        # execution — which would start failing only once traffic warmed up.
+        conn.prepare_threshold = None
     else:
         conn = sqlite3.connect(config.DB_FILE, timeout=10)
         conn.row_factory = sqlite3.Row
