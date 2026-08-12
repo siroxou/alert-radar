@@ -1,0 +1,17 @@
+# Keep the function bundle to source only.
+models/
+data/
+docs/
+deploy/
+alerts.log*
+snapshot.json
+*.db
+*.db-shm
+*.db-wal
+test_all.py
+requirements-local.txt
+Dockerfile
+docker-compose.yml
+.claude/
+.venv/
+__pycache__/

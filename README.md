@@ -93,14 +93,14 @@ flowchart LR
     end
     subgraph Process["Python process (FastAPI + uvicorn)"]
         API[REST API<br/>Pydantic-validated]
-        LOOP[Eval loop thread<br/>every 30s]
+        LOOP[Eval cycle<br/>loop thread · or cron]
         WATCH[Dead-man's switch<br/>heartbeat check]
         AI[Local LLM · in-process<br/>Qwen2.5 via llama.cpp<br/>optional, fail-open]
     end
     DATA[Massive API<br/>market data]
     MAIL[Resend<br/>email]
-    DB[(SQLite · WAL<br/>rules · state · alerts · settings)]
-    SNAP[[snapshot.json<br/>atomic writes]]
+    DB[(SQLite · WAL — or PostgreSQL<br/>rules · state · alerts · settings)]
+    SNAP[[snapshot row<br/>published per cycle]]
 
     UI -->|/api/rules, /api/settings…| API
     UI -->|polls /api/snapshot every 3s| API
@@ -156,9 +156,10 @@ Things in here I'm happy with — and would happily walk through in an interview
 - **Transition-based de-duplication state machine.** Alerts are modeled as edges, not levels: `db.record_transition()` returns `True` only on a fresh false→true transition. Even a "MA cross" is expressed as *"fast is now above slow"*, so the same dedup logic covers every condition type.
 - **Dependency-light technical indicators.** Wilder-smoothed RSI, SMA, EMA, and percent-change are implemented from scratch in pure Python — no numpy, no pandas. The whole runtime needs just three packages (`fastapi`, `uvicorn`, `requests`), and the indicators are trivially unit-testable against textbook values.
 - **Thread-safe persistence.** The eval-loop thread and the web CRUD handlers share SQLite in WAL mode with a write lock, so reads never block and writes never corrupt.
-- **Atomic snapshot writes.** The dashboard polls a `snapshot.json`; the writer writes to a temp file and `os.replace()`s it, so a concurrent read can never observe a half-written file.
+- **Single-row snapshot.** Each cycle publishes its view as one row in the database and the dashboard polls it, so a reader never sees a half-written state and a cold serverless process can still answer.
 - **Dead-man's switch.** A heartbeat timestamp is refreshed on every healthy cycle; if it goes stale the process emails an ops warning and the UI flips to a "Monitor stalled" state. Silent failure is the worst failure mode for an alerting system, so this is designed in.
-- **Validated trust boundary.** Untrusted rule payloads are validated by Pydantic models at the HTTP edge (unknown condition types, bad timeframes, and retired channels are rejected with `422`) before anything reaches the engine.
+- **Validated trust boundary.** Untrusted rule payloads are validated by Pydantic models at the HTTP edge (unknown condition types, bad timeframes, malformed symbols, and unrecognised fields are rejected with `422`) before anything reaches the engine.
+- **Authenticated.** One shared token gates the dashboard and the API. The browser trades it for an `httpOnly` cookie; API clients send `Authorization: Bearer …`. A deployed instance refuses to serve at all without one.
 - **No-build frontend.** The dashboard is a single hand-written HTML file — Tailwind via CDN, inline SVG icons, a hash router, and a 3-second snapshot poll. Claymorphism design, fully responsive, accessible (skip links, ARIA labels, reduced-motion support), zero npm toolchain.
 - **Optional local LLM, in-process.** A quantized Qwen2.5 model (`llama-cpp-python`) turns plain-English requests into rules with **grammar-constrained decoding** (guaranteed-valid JSON, then validated by the same registry) and narrates the Insights page — no cloud, no API keys, and fully fail-open so the app runs unchanged without it.
 
@@ -213,7 +214,7 @@ All configuration is via environment variables (loaded from `.env`):
 | `AI_ENABLED` | Enable the local NL rule builder + insights summary | `true` |
 | `AI_MODEL_REPO` / `AI_MODEL_FILE` | Hugging Face GGUF repo + file (swap to the 0.5B variant for low-RAM) | Qwen2.5-1.5B GGUF |
 
-> Recipients resolve per alert in priority order: **rule override → saved Settings → `.env` default**, so you can change where alerts go from the dashboard without a restart.
+> Recipients resolve in priority order: **saved Settings → `.env` default**, so you can change where alerts go from the dashboard without a restart. If the database is unreachable the `.env` default is used, so a "monitor is down" warning still reaches you.
 
 ## Local AI (optional)
 
@@ -232,7 +233,7 @@ Interactive OpenAPI docs are served at `/docs`.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/api/meta` | Symbols, timeframes, channels, condition schema |
+| `GET` | `/api/meta` | Symbols, timeframes, condition schema, feature flags |
 | `GET` | `/api/snapshot` | Live rule status, recent alerts, and health |
 | `GET` `POST` | `/api/rules` | List / create rules |
 | `PUT` `DELETE` | `/api/rules/{id}` | Update / delete a rule |
@@ -249,7 +250,7 @@ Interactive OpenAPI docs are served at `/docs`.
 python test_all.py
 ```
 
-A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, CRUD, the dedup state machine, the notifier gating, a full engine cycle, recipient resolution, backtest/watchlist, and the local-AI parse/summary (stubbed — no model or network). **9/9 passing.**
+A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, the NYSE calendar (asserted against the published 2026/2027 dates), CRUD, the dedup state machine, batched notification, a full engine cycle, recipient resolution, backtest/watchlist, the HTTP routes (auth gate, payload validation, cron secret), and the local-AI parse/summary (stubbed — no model or network). **11/11 passing.**
 
 ## Performance
 
@@ -262,13 +263,15 @@ A single, framework-free, network-free suite (temp SQLite + synthetic series) co
 
 The GGUF is memory-mapped and the model stays resident after the first request, so steady-state parses are **sub-second on CPU**. The only slow step is the one-time model download on first use — everything after runs fully offline. The 1.5B is the default for best disambiguation (e.g. it maps *"hits either 20 or 80"* to `rsi_band` where the 0.5B falls back to plain `rsi`); the 0.5B trades a little quality for ~half the size and latency. *(Numbers depend on hardware; measured on an Apple-silicon laptop.)*
 
-**Alert engine** — each cycle fetches every `(symbol, timeframe)` once (cached), runs pure-Python indicators, dedups via the SQLite state machine, and writes an **atomic** `snapshot.json`; the dashboard polls that snapshot every 3s. Rules are evaluated every `REFRESH_SECONDS` (default 30s) during market hours — no per-request market-data calls, so the UI stays instant regardless of rule count.
+**Alert engine** — each cycle fetches every `(symbol, timeframe)` once (cached), runs pure-Python indicators, dedups via the database state machine, and publishes a snapshot row; the dashboard polls it every 3s. A cycle's fired rules are emailed in **one batched request**, so a correlated move does not turn into N round-trips against Resend's rate limit. Rules are evaluated every `REFRESH_SECONDS` (default 30s) during market hours — no per-request market-data calls, so the UI stays instant regardless of rule count.
 
 ## Deployment
 
-The app is a single always-on process that serves both the dashboard and the API.
+The app runs in two shapes from one codebase.
 
-**Docker (recommended):**
+### Always-on host — Docker, systemd, a VPS
+
+A single resident process serves the dashboard and runs the evaluation loop every `REFRESH_SECONDS`, persisting to SQLite on local disk.
 
 ```bash
 docker compose up -d      # loads .env, persists SQLite in ./data/
@@ -277,6 +280,34 @@ docker compose up -d      # loads .env, persists SQLite in ./data/
 **Linux VPS (systemd):** a ready-to-adapt unit lives in [`deploy/rsi-alerts.service`](deploy/rsi-alerts.service) (`Restart=always`, `EnvironmentFile`, `After=network.target`).
 
 **Windows:** run `python main.py` under Task Scheduler or NSSM.
+
+### Serverless — Vercel
+
+Vercel has a read-only filesystem, no resident process, and a fresh process per request, so three things change automatically when `VERCEL` is set:
+
+| Always-on | On Vercel |
+|---|---|
+| Background thread every 30s | Vercel Cron → `GET /api/cron/evaluate` |
+| SQLite file on disk | PostgreSQL via `DATABASE_URL` |
+| `snapshot.json` + `alerts.log` on disk | Snapshot row in the database; logs to stdout |
+| Local Qwen2.5 via llama.cpp | Unavailable — the AI panels hide themselves |
+
+Required environment variables:
+
+| Variable | Why |
+|---|---|
+| `DATABASE_URL` | Any PostgreSQL (Supabase, Neon, RDS). Without it there is nowhere for rules to live. |
+| `ALERT_RADAR_TOKEN` | Dashboard/API password. **The app returns `503` until this is set** — an open `/api/settings` would let anyone redirect your alerts to their own address and send mail from your verified domain. |
+| `CRON_SECRET` | A *different* secret. Vercel sends it to the cron endpoint; keeping it separate stops a dashboard user forcing evaluation cycles. |
+| `MASSIVE_API_KEY`, `RESEND_API_KEY`, `DRY_RUN=false` | Market data and delivery. |
+
+```bash
+vercel deploy --prod
+```
+
+> **Cron cadence is plan-bound.** `vercel.json` ships `*/5 * * * *`, which needs a **Pro** plan. Hobby accounts are capped at **one cron per day** and will fail the deployment with a more-frequent expression — change it to something like `0 14 * * *` on Hobby, and be aware that a once-daily monitor is a status page, not an alerting system.
+>
+> A cron-driven dead-man's switch cannot detect its *own* trigger failing, so `healthy` is computed when the snapshot is read rather than when it is written — a stalled cron shows up the moment anyone opens the dashboard. For genuine coverage, also point an external uptime monitor at the deployment.
 
 ## Project structure
 
@@ -287,22 +318,22 @@ alert-radar/
 ├── ai.py                # optional local LLM (Qwen2.5 via llama.cpp) — NL rules + insights
 ├── conditions.py        # extensible condition registry
 ├── rsi.py               # pure-Python indicators (RSI, SMA, EMA, %-change)
-├── db.py                # SQLite persistence (WAL, thread-safe)
-├── notifier.py          # Resend email + dead-man's-switch alert
+├── db.py                # persistence — SQLite (local) or PostgreSQL (serverless)
+├── notifier.py          # batched Resend email + dead-man's-switch alert
 ├── massive_client.py    # market-data REST client
 ├── config.py            # env + settings
 ├── index.html           # single-file dashboard SPA
-├── test_all.py          # dependency-free test suite (9/9)
+├── test_all.py          # dependency-free test suite (11/11)
+├── vercel.json          # cron schedule + function config
 ├── Dockerfile · docker-compose.yml · deploy/rsi-alerts.service
 └── .env.example
 ```
 
 ## Roadmap
 
-- Market-holiday calendar (currently weekday + hours)
-- Compiled Tailwind build for production
+- Christmas-Eve half-day when Dec 24 is itself the observed holiday (rare; currently treated as a full session)
+- Compiled Tailwind build for production (drops the CDN `<script>` and lets a strict CSP land)
 - Per-rule cooldown / re-arm intervals
-- Postgres backend for multi-instance / HA
 - Web-push and webhook delivery channels
 
 ## License

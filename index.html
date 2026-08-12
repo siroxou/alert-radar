@@ -441,11 +441,7 @@
       <label class="text-xs font-extrabold" style="color:var(--ink2)">CONDITION
         <select id="f-type" class="field mt-1.5"></select></label>
       <div id="f-params" class="grid grid-cols-2 gap-3"></div>
-      <div>
-        <p class="text-xs font-extrabold mb-2" style="color:var(--ink2)">CHANNELS <span class="font-bold normal-case">(email only — SMS &amp; WhatsApp retired)</span></p>
-        <div id="f-channels" class="flex flex-wrap gap-2"></div>
-        <p class="sub text-xs mt-2">Emails go to your saved recipients — edit them in <a href="#/settings" class="font-bold" style="color:var(--violet-deep)">Settings</a>.</p>
-      </div>
+      <p class="sub text-xs">Emails go to your saved recipients — edit them in <a href="#/settings" class="font-bold" style="color:var(--violet-deep)">Settings</a>.</p>
       <label class="switch mt-1">
         <input type="checkbox" id="f-enabled" class="sr-only" checked />
         <span class="track" aria-hidden="true"></span>
@@ -512,14 +508,26 @@ const tfLabel = (v) => (META && (META.timeframes.find((t) => t.value === v) || {
 
 // when the page is opened as a file (not served by the app), talk to the local service directly
 const API_BASE = location.protocol.startsWith('http') && location.host ? '' : 'http://localhost:8000';
-async function api(path, opts) {
-  const r = await fetch(API_BASE + path, opts);
+// The session lives in an httpOnly cookie, so it is never readable from JS —
+// `credentials` is the whole auth story on this side.
+async function api(path, opts = {}) {
+  const r = await fetch(API_BASE + path, { credentials: 'include', ...opts });
   if (!r.ok) {
+    if (r.status === 401) { onUnauthenticated(); }
     let m = `HTTP ${r.status}`;
     try { const b = await r.json(); m = Array.isArray(b.detail) ? b.detail.map((d) => d.msg).join(' · ') : (b.detail || m); } catch {}
-    throw new Error(m);
+    const err = new Error(m); err.status = r.status; throw err;
   }
   return r.status === 204 ? null : r.json();
+}
+
+// A 401 otherwise looks exactly like a backend outage: every caller swallows the
+// error, the header says "Reconnecting…", and poll() retries forever.
+let _authLost = false;
+function onUnauthenticated() {
+  if (_authLost) return;
+  _authLost = true;
+  location.reload();  // the server serves the unlock page for an unauthenticated GET /
 }
 
 function toast(msg, ok = true) {
@@ -861,23 +869,19 @@ function tickAgo() {
 /* ================= settings ================= */
 const CHANNELS = [
   { id: 'email', name: 'Email', icon: 'mail', desc: 'HTML alerts via Resend' },
-  { id: 'sms', name: 'SMS', icon: 'sms', retired: true, desc: 'Discontinued — no longer available' },
-  { id: 'whatsapp', name: 'WhatsApp', icon: 'phone', retired: true, desc: 'Discontinued — no longer available' },
-  { id: 'rcs', name: 'RCS', icon: 'zap', retired: true, desc: 'Discontinued — no longer available' },
-  { id: 'push', name: 'Push', icon: 'smartphone', soon: true, desc: 'Mobile app notifications' },
 ];
 function renderSettings() {
   const emailOn = !!(META && META.email_enabled);
   el('channel-cards').innerHTML = CHANNELS.map((c) => {
-    const live = c.id === 'email' && emailOn;
-    const badge = c.retired ? '<span class="chip chip-gray" style="text-decoration:line-through">Retired</span>'
-      : live ? '<span class="chip chip-mint"><span class="dot"></span>Active</span>'
-      : c.id === 'email' ? '<span class="chip chip-amber">Add RESEND_API_KEY</span>'
-      : '<span class="chip chip-amber">Coming soon</span>';
+    const live = emailOn;
+    // the amber badge is the only place the app says "email is not configured" —
+    // alerts would otherwise fire, send nothing, and look perfectly healthy
+    const badge = live ? '<span class="chip chip-mint"><span class="dot"></span>Active</span>'
+      : '<span class="chip chip-amber">Add RESEND_API_KEY</span>';
     return `
     <div class="clay-sm p-4 flex items-center gap-3 ${live ? '' : 'opacity-70'}">
       <span class="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0" style="background:${live ? 'var(--violet-soft)' : '#ECEAF4'};color:${live ? 'var(--violet-deep)' : 'var(--ink2)'}">${svg(c.icon, 'w-5 h-5')}</span>
-      <div class="min-w-0 flex-1"><p class="font-extrabold ${c.retired ? 'line-through' : ''}">${c.name}</p><p class="sub text-xs">${c.desc}</p></div>
+      <div class="min-w-0 flex-1"><p class="font-extrabold">${c.name}</p><p class="sub text-xs">${c.desc}</p></div>
       ${badge}
     </div>`;
   }).join('');
@@ -912,12 +916,6 @@ function buildParams(type, values = {}, container = 'f-params') {
     return `<label class="text-xs font-extrabold uppercase" style="color:var(--ink2)">${p.name}${inner}</label>`;
   }).join('');
 }
-const chIcon = (c) => c === 'sms' ? 'sms' : c === 'whatsapp' ? 'phone' : c === 'email' ? 'mail' : c === 'rcs' ? 'zap' : 'zap';
-function buildChannels(selected = []) {
-  const live = META.channels.map((c) => `<label class="chip-toggle ${selected.includes(c) ? 'on' : ''}"><input type="checkbox" class="sr-only f-ch" value="${c}" ${selected.includes(c) ? 'checked' : ''}/>${svg(chIcon(c), 'w-4 h-4')}${c.toUpperCase()}</label>`).join('');
-  const retired = (META.retired_channels || []).map((c) => `<span class="chip-toggle is-disabled" style="text-decoration:line-through" title="Retired — email only">${svg(chIcon(c), 'w-4 h-4')}${c.toUpperCase()}</span>`).join('');
-  el('f-channels').innerHTML = live + retired + `<span class="chip-toggle is-disabled" aria-disabled="true">${svg('smartphone', 'w-4 h-4')}PUSH · soon</span>`;
-}
 function openModal(rule = null) {
   if (!META) { toast('Connecting to the API — try again in a moment', false); return; }
   lastFocus = document.activeElement;
@@ -933,7 +931,6 @@ function openModal(rule = null) {
   const type = rule ? rule.condition.type : META.condition_types[0].type;
   el('f-type').value = type;
   buildParams(type, rule ? rule.condition : {});
-  buildChannels(rule ? rule.channels || [] : []);
   el('f-enabled').checked = rule ? rule.enabled : true;
   const m = el('modal'); m.classList.remove('hidden'); m.classList.add('flex');
   el('f-name').focus();
@@ -956,15 +953,14 @@ document.addEventListener('click', (e) => {
         .then(() => refreshRules('Alert deleted'))
         .catch((err) => toast('Delete failed: ' + err.message, false));
   } else if (btn.dataset.act === 'toggle') {
+    // explicit field list: the API rejects unknown keys, and `rule` carries the
+    // server-owned id/created_at it was read with
     api(`/api/rules/${rule.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...rule, enabled: !rule.enabled }) })
+      body: JSON.stringify({ name: rule.name, symbol: rule.symbol, timeframe: rule.timeframe,
+        condition: rule.condition, enabled: !rule.enabled }) })
       .then(() => refreshRules(rule.enabled ? 'Alert paused' : 'Alert resumed'))
       .catch((err) => toast('Update failed: ' + err.message, false));
   }
-});
-el('f-channels').addEventListener('change', (e) => {
-  const label = e.target.closest('.chip-toggle');
-  if (label) label.classList.toggle('on', e.target.checked);
 });
 el('f-type').addEventListener('change', (e) => buildParams(e.target.value));
 el('new-btn').addEventListener('click', () => openModal());
@@ -1013,7 +1009,6 @@ el('rule-form').addEventListener('submit', async (e) => {
     symbol: el('f-symbol').value.trim().toUpperCase(),
     timeframe: el('f-timeframe').value,
     condition,
-    channels: [...document.querySelectorAll('.f-ch:checked')].map((c) => c.value),
     enabled: el('f-enabled').checked,
   };
   const id = el('f-id').value;

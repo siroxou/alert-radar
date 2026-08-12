@@ -1,0 +1,8 @@
+# Everything in the deployable set, plus the optional in-process AI.
+# Use this for local dev and Docker; Vercel installs requirements.txt only.
+-r requirements.txt
+
+# Local AI (optional) — embedded Qwen2.5-Instruct inference; auto-downloads the GGUF on
+# first use. Everything fails open, so the app runs fine even if these aren't installed.
+llama-cpp-python
+huggingface_hub

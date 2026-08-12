@@ -2,7 +2,8 @@
 
 SMS/WhatsApp/RCS (sent.dm) were retired — email is the only channel now.
 DRY_RUN (default) or missing credentials/recipients → the payload is logged, not sent.
-A rule delivers when its channels include "email" or are empty (the default).
+A cycle's fires go out as ONE batched request: a correlated move trips many rules
+at once, and per-rule POSTs hit Resend's rate limit and the caller's wall clock together.
 """
 import logging
 from html import escape
@@ -14,24 +15,65 @@ import db
 
 logger = logging.getLogger("rsi_alerts")
 RESEND_URL = "https://api.resend.com/emails"
+RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
+BATCH_MAX = 100  # Resend's per-request ceiling
 
 
-def _recipients(rule=None):
-    """Resolve who gets the email: rule override → saved Settings → .env default."""
-    if rule and rule.get("email_recipients"):
-        return rule["email_recipients"]
-    saved = db.get_setting("email_recipients")
+def _recipients():
+    """Resolve who gets the email: saved Settings → .env default.
+
+    Falls back to the env default when the settings read *throws*, not just when
+    it comes back empty — an unreachable database is a leading cause of the dead
+    cycle this module has to warn about, and the warning must still go out.
+    """
+    try:
+        saved = db.get_setting("email_recipients")
+    except Exception:
+        logger.exception("recipient lookup failed — falling back to DEFAULT_EMAIL_RECIPIENTS")
+        return config.DEFAULT_EMAIL_RECIPIENTS
     if saved:
         return [e.strip() for e in saved.split(",") if e.strip()]
     return config.DEFAULT_EMAIL_RECIPIENTS
 
 
-def send(rule, description, value, price, timestamp, dry_run=None):
+def _subject(rule, description):
+    return f"\U0001F6A8 {rule['symbol']} {rule['timeframe']} — {description}"
+
+
+def send_batch(fires, timestamp, dry_run=None):
+    """Deliver one email per fired rule in a single request.
+
+    `fires` is a list of (rule, description, value, price).
+    """
     dry = config.DRY_RUN if dry_run is None else dry_run
-    channels = rule.get("channels") or []
-    if "email" not in channels and channels:
-        return {}  # rule targets only a retired channel → nothing to deliver
-    return {"email": _send_email(rule, description, value, price, timestamp, dry)}
+    recipients = _recipients()
+    results = [{"sent": False, "to": recipients, "subject": _subject(r, d)} for r, d, _v, _p in fires]
+    if not fires:
+        return results
+    if dry or not config.RESEND_API_KEY or not recipients:
+        reason = "DRY_RUN" if dry else "missing RESEND_API_KEY/recipients"
+        for res in results:
+            logger.info("[%s] would email → from=%s to=%s subject=%s",
+                        reason, config.EMAIL_FROM, recipients, res["subject"])
+        return results
+
+    payload = [{"from": config.EMAIL_FROM, "to": recipients, "subject": _subject(rule, desc),
+                "html": _email_html(rule, desc, value, price, timestamp)}
+               for rule, desc, value, price in fires]
+    headers = {"Authorization": f"Bearer {config.RESEND_API_KEY}", "Content-Type": "application/json"}
+    for start in range(0, len(payload), BATCH_MAX):
+        chunk = payload[start:start + BATCH_MAX]
+        resp = requests.post(RESEND_BATCH_URL, timeout=15, headers=headers, json=chunk)
+        resp.raise_for_status()
+        for res in results[start:start + BATCH_MAX]:
+            res.update(sent=True, status=resp.status_code)
+    logger.info("emailed %d alert(s) → to=%s", len(payload), recipients)
+    return results
+
+
+def send(rule, description, value, price, timestamp, dry_run=None):
+    """Single-rule convenience wrapper over send_batch."""
+    return {"email": send_batch([(rule, description, value, price)], timestamp, dry_run)[0]}
 
 
 def send_deadman(reason, stale_seconds, dry_run=None):
@@ -50,22 +92,6 @@ def send_deadman(reason, stale_seconds, dry_run=None):
     resp.raise_for_status()
     logger.warning("DEAD-MAN email sent → to=%s", recipients)
     return {"sent": True, "to": recipients}
-
-
-def _send_email(rule, description, value, price, timestamp, dry):
-    recipients = _recipients(rule)
-    subject = f"\U0001F6A8 {rule['symbol']} {rule['timeframe']} — {description}"
-    if dry or not config.RESEND_API_KEY or not recipients:
-        reason = "DRY_RUN" if dry else "missing RESEND_API_KEY/recipients"
-        logger.info("[%s] would email → from=%s to=%s subject=%s", reason, config.EMAIL_FROM, recipients, subject)
-        return {"sent": False, "to": recipients, "subject": subject}
-    resp = requests.post(RESEND_URL, timeout=10,
-        headers={"Authorization": f"Bearer {config.RESEND_API_KEY}", "Content-Type": "application/json"},
-        json={"from": config.EMAIL_FROM, "to": recipients, "subject": subject,
-              "html": _email_html(rule, description, value, price, timestamp)})
-    resp.raise_for_status()
-    logger.info("email sent → to=%s", recipients)
-    return {"sent": True, "to": recipients, "status": resp.status_code}
 
 
 def _email_html(rule, description, value, price, timestamp):

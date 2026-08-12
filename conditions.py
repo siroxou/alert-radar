@@ -28,11 +28,9 @@ class Condition:
         if missing:
             raise ValueError(f"{self.type} condition missing params: {missing}")
 
-    def evaluate(self, series, params):
-        raise NotImplementedError
-
-    def describe(self, params):
-        raise NotImplementedError
+    def min_bars(self, params):
+        """Conservative minimum bar count this condition needs."""
+        return 1
 
 
 @register("rsi")
@@ -49,6 +47,9 @@ class RSICondition(Condition):
     def describe(self, params):
         return f"RSI({int(params.get('period', 14))}) {params['direction']} {params['threshold']}"
 
+    def min_bars(self, params):
+        return int(params.get("period", 14)) + 1
+
 
 @register("rsi_band")
 class RSIBandCondition(Condition):
@@ -63,6 +64,9 @@ class RSIBandCondition(Condition):
 
     def describe(self, params):
         return f"RSI({int(params.get('period', 14))}) hits {params['low']} or {params['high']}"
+
+    def min_bars(self, params):
+        return int(params.get("period", 14)) + 1
 
 
 @register("price")
@@ -93,6 +97,9 @@ class PercentChangeCondition(Condition):
     def describe(self, params):
         return f"{params['direction']} {params['pct']}% over {int(params.get('bars', 1))} bar(s)"
 
+    def min_bars(self, params):
+        return int(params.get("bars", 1)) + 1
+
 
 @register("ma_cross")
 class MACrossCondition(Condition):
@@ -108,6 +115,9 @@ class MACrossCondition(Condition):
 
     def describe(self, params):
         return f"{params.get('kind', 'sma').upper()} {params['fast']}/{params['slow']} {params['direction']} cross"
+
+    def min_bars(self, params):
+        return int(params.get("slow", 50)) + 1
 
 
 # --- module-level helpers used by the engine + API ---
@@ -132,16 +142,7 @@ def describe(condition):
 
 
 def min_bars(condition):
-    """Conservative minimum bar count a condition needs."""
-    p = condition
-    t = condition["type"]
-    if t == "rsi":
-        return int(p.get("period", 14)) + 1
-    if t == "ma_cross":
-        return int(p.get("slow", 50)) + 1
-    if t == "percent_change":
-        return int(p.get("bars", 1)) + 1
-    return 1
+    return REGISTRY[condition["type"]].min_bars(_params(condition))
 
 
 def schema():

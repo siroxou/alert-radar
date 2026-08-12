@@ -15,7 +15,5 @@ resend_mcp_config.json
 # local editor / tooling
 .claude/
 .venv/
+.vercel/
 *.pyc
-
-
-

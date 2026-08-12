@@ -1,3 +1,4 @@
+import re
 import time as _time
 from datetime import date, timedelta
 
@@ -7,6 +8,9 @@ import config
 
 BASE_URL = config.MASSIVE_BASE_URL  # Massive (formerly Polygon.io); Polygon-compatible /v2/aggs shape
 MAX_BARS = 250  # newest N bars — enough for RSI/%/MA up to ~200 period
+# The symbol is interpolated into the request PATH with our API key attached, so it
+# is validated here — the one place every caller funnels through — not per caller.
+SYMBOL_RE = re.compile(r"[A-Z][A-Z.\-]{0,9}")
 
 
 def _get_with_retry(url, params, retries=1):
@@ -22,12 +26,14 @@ def _get_with_retry(url, params, retries=1):
     return resp
 
 
-def get_bars(symbol: str, multiplier: int, timespan: str, lookback_days: int) -> tuple[list[float], list[float]]:
-    """Return (closes, volumes) oldest-first for the MOST RECENT bars.
+def get_bars(symbol: str, multiplier: int, timespan: str, lookback_days: int) -> list:
+    """Return closes oldest-first for the MOST RECENT bars.
 
     Uses sort=desc + limit so we always get the newest bars, then reverses to
     ascending. (sort=asc + limit would return the *oldest* bars in the window.)
     """
+    if not SYMBOL_RE.fullmatch(symbol or ""):
+        raise ValueError(f"invalid symbol: {symbol!r}")
     to_date = date.today()
     from_date = to_date - timedelta(days=lookback_days)
     url = (
@@ -46,6 +52,4 @@ def get_bars(symbol: str, multiplier: int, timespan: str, lookback_days: int) ->
         raise ValueError(f"no bars returned for {symbol} {multiplier}{timespan}")
 
     results.reverse()  # desc -> ascending (oldest first)
-    closes = [bar["c"] for bar in results]
-    volumes = [bar.get("v", 0.0) for bar in results]
-    return closes, volumes
+    return [bar["c"] for bar in results]
