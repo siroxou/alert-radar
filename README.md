@@ -159,7 +159,7 @@ Things in here I'm happy with — and would happily walk through in an interview
 - **Single-row snapshot.** Each cycle publishes its view as one row in the database and the dashboard polls it, so a reader never sees a half-written state and a cold serverless process can still answer.
 - **Dead-man's switch.** A heartbeat timestamp is refreshed on every healthy cycle; if it goes stale the process emails an ops warning and the UI flips to a "Monitor stalled" state. Silent failure is the worst failure mode for an alerting system, so this is designed in.
 - **Validated trust boundary.** Untrusted rule payloads are validated by Pydantic models at the HTTP edge (unknown condition types, bad timeframes, malformed symbols, and unrecognised fields are rejected with `422`) before anything reaches the engine.
-- **Authenticated.** One shared token gates the dashboard and the API. The browser trades it for an `httpOnly` cookie; API clients send `Authorization: Bearer …`. A deployed instance refuses to serve at all without one.
+- **Google accounts, per-user data.** Sign-in is Google via Supabase, and every rule, alert and recipient list belongs to exactly one account — ownership lives in the SQL `WHERE` clause, not in a handler someone can forget. FastAPI runs the OAuth code exchange **server-side** (PKCE) and mints its own HMAC-signed `httpOnly` cookie, so no Supabase JWT ever reaches the browser: the dashboard loads a third-party CDN script, and the `supabase-js` alternative would park that JWT in `localStorage` within its reach. A deployed instance refuses to serve at all without auth configured.
 - **No-build frontend.** The dashboard is a single hand-written HTML file — Tailwind via CDN, inline SVG icons, a hash router, and a 3-second snapshot poll. Claymorphism design, fully responsive, accessible (skip links, ARIA labels, reduced-motion support), zero npm toolchain.
 - **Optional local LLM, in-process.** A quantized Qwen2.5 model (`llama-cpp-python`) turns plain-English requests into rules with **grammar-constrained decoding** (guaranteed-valid JSON, then validated by the same registry) and narrates the Insights page — no cloud, no API keys, and fully fail-open so the app runs unchanged without it.
 
@@ -250,7 +250,13 @@ Interactive OpenAPI docs are served at `/docs`.
 python test_all.py
 ```
 
-A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, the NYSE calendar (asserted against the published 2026/2027 dates), CRUD, the dedup state machine, batched notification, a full engine cycle, recipient resolution, backtest/watchlist, the HTTP routes (auth gate, payload validation, cron secret), and the local-AI parse/summary (stubbed — no model or network). **11/11 passing.**
+A single, framework-free, network-free suite (temp SQLite + synthetic series) covering config, indicators, the condition registry + validation, the NYSE calendar (asserted against the published 2026/2027 dates), CRUD, the dedup state machine, per-user isolation (no cross-account read, write or delete), the pre-`user_id` database migration, batched per-user notification, a full engine cycle, backtest/watchlist, the HTTP routes (session signing/tampering/expiry, ownership, rule cap, cron secret), and the local-AI parse/summary (stubbed — no model or network). **12/12 passing.**
+
+Two of those assertions exist to catch specific expensive regressions: that one
+symbol×timeframe is still fetched **once** per cycle no matter how many users share it
+(grouping fires by user invites a per-user outer loop that would multiply the market-data
+bill), and that a user with no recipients never falls back to `DEFAULT_EMAIL_RECIPIENTS`
+(which would post a stranger's alerts to the operator's inbox).
 
 ## Performance
 
@@ -296,10 +302,23 @@ Required environment variables:
 
 | Variable | Why |
 |---|---|
-| `DATABASE_URL` | Any PostgreSQL (Supabase, Neon, RDS). Without it there is nowhere for rules to live. |
-| `ALERT_RADAR_TOKEN` | Dashboard/API password. **The app returns `503` until this is set** — an open `/api/settings` would let anyone redirect your alerts to their own address and send mail from your verified domain. |
-| `CRON_SECRET` | A *different* secret. Vercel sends it to the cron endpoint; keeping it separate stops a dashboard user forcing evaluation cycles. |
-| `MASSIVE_API_KEY`, `RESEND_API_KEY`, `DRY_RUN=false` | Market data and delivery. |
+| `DATABASE_URL` | Any PostgreSQL (Supabase, Neon, RDS). Without it there is nowhere for rules to live. Point it at a **transaction pooler** (Supabase port `6543`), not the direct port. |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Google sign-in. The anon/publishable key is public by design. **Never** add the `service_role` key — this app has no use for it and it bypasses RLS project-wide. |
+| `SESSION_SECRET` | Signs the session cookie (`openssl rand -hex 32`). **The app returns `503` until auth is configured** — an open `/api/settings` would let anyone redirect alerts to their own address and send mail from your verified domain. Rotating this logs everyone out. |
+| `SITE_URL` | e.g. `https://liveradar.pro`. Must exactly match a Supabase **Redirect URL**, or GoTrue silently falls back to the Site URL and sign-in "succeeds" with no cookie. |
+| `CRON_SECRET` | A *different* secret for the cron endpoint; keeping it separate stops a signed-in user forcing evaluation cycles, each of which spends market-data quota and can send mail. |
+| `MASSIVE_API_KEY`, `RESEND_API_KEY`, `DRY_RUN=false` | Market data and delivery. `DRY_RUN` defaults to **true**: leave it unset and the app looks perfectly healthy while never sending a single email. |
+
+Signup is open — anyone with a Google account gets their own rules. `MAX_RULES_PER_USER`
+(default 25) bounds what one account can cost you. In the Supabase dashboard, enable the
+**Google** provider and add `$SITE_URL/api/auth/callback` to the redirect allow list; in
+Google Cloud Console the only authorized redirect URI is
+`https://<project-ref>.supabase.co/auth/v1/callback` — Google never sees your app domain.
+
+> **Turn on RLS.** The four tables are otherwise reachable by the `anon` role through
+> Supabase's auto-generated PostgREST API, which routes around every check in this app.
+> `ALTER TABLE … ENABLE ROW LEVEL SECURITY` with **no policies** is the whole fix: the app
+> connects as the table owner and owners bypass RLS, while PostgREST sees nothing.
 
 ```bash
 vercel deploy --prod

@@ -145,18 +145,23 @@ def run_cycle(series_provider=None):
         run_once(series_provider)
     else:
         rows = [_row(r, conditions.describe(r["condition"]), None, False)
-                for r in db.list_rules(enabled_only=True)]
+                for r in db.all_enabled_rules()]
         db.mark_success()
-        _publish_snapshot(rows)
+        _publish_snapshots(rows)
         logger.info("market closed, idling")
     _check_deadman()
 
 
 def run_once(series_provider=None):
     provider = _provider(series_provider)  # honours DEMO, so no path reaches the live API in demo mode
-    rules = db.list_rules(enabled_only=True)
+    rules = db.all_enabled_rules()
+    # ONE flat loop over every user's rules, not a per-user outer loop: `cache` is
+    # what keeps 10 users watching NVDA 5min at a single paid upstream fetch, and
+    # nesting by user is exactly the refactor that silently destroys that.
+    # ponytail: unbounded fetches per cycle. A global ceiling here is the upgrade
+    # path if signups ever outpace the market-data budget.
     cache = {}  # (symbol,timeframe) -> series, so each pair is fetched once per cycle
-    rows, fires = [], []
+    rows, fires = [], {}  # fires: user_id -> [(rule, desc, value, price)]
     for rule in rules:
         key = (rule["symbol"], rule["timeframe"])
         try:
@@ -170,56 +175,67 @@ def run_once(series_provider=None):
                 # history before delivery: if the process is killed mid-cycle the
                 # alert is still recorded, rather than latched fired with no trace
                 db.append_alert(rule, desc, value, price)
-                fires.append((rule, desc, value, price))
+                fires.setdefault(rule["user_id"], []).append((rule, desc, value, price))
                 logger.info("ALERT: %s [%s] value=%.2f price=%.2f", rule["name"], desc, value, price)
             rows.append(_row(rule, desc, value, fired))
         except Exception:
             logger.exception("error evaluating rule %s (%s)", rule.get("id"), rule.get("name"))
             rows.append(_row(rule, "error", None, False, error=True))
-    if fires:
-        # one batched request, not one per rule: a correlated selloff fires many
-        # rules at once, and per-rule POSTs hit Resend's rate limit and the
-        # function's wall clock together
+    for uid, user_fires in fires.items():
+        # one batched request per user, not one per rule: a correlated selloff fires
+        # many rules at once, and per-rule POSTs hit Resend's rate limit and the
+        # function's wall clock together. try/except INSIDE the loop, so one user's
+        # delivery failure cannot swallow everyone queued behind them.
         try:
-            notifier.send_batch(fires, now_et())
+            notifier.send_batch(user_fires, now_et(), db.user_recipients(uid))
         except Exception:
-            logger.exception("alert delivery failed for %d fired rule(s)", len(fires))
+            logger.exception("alert delivery failed for user %s (%d rule(s))", uid, len(user_fires))
     global _last_error
     ok = (not rows) or any(not r.get("error") for r in rows)
     if ok:
         db.mark_success()
     elif rows:
         _last_error = "all rules failed to evaluate (market data unavailable?)"
-    _publish_snapshot(rows)
+    _publish_snapshots(rows)
 
 
 def _row(rule, desc, value, fired, error=False):
     return {
-        "id": rule["id"], "name": rule["name"], "symbol": rule["symbol"],
+        "id": rule["id"], "user_id": rule["user_id"], "name": rule["name"], "symbol": rule["symbol"],
         "timeframe": rule["timeframe"], "type": rule["condition"].get("type"),
         "description": desc, "value": None if value is None else round(value, 2),
         "fired": bool(fired), "enabled": True, "error": error,
     }
 
 
-def _publish_snapshot(rows):
-    """Store the cycle's view in the DB — a read-only filesystem has nowhere to put a file."""
-    db.set_setting("snapshot", json.dumps({
-        "updated": now_et(),
-        "market_open": market_is_open(),
-        "dry_run": config.DRY_RUN,
-        "rules": rows,
-    }))
+def _publish_snapshots(rows):
+    """Store the cycle's view in the DB — a read-only filesystem has nowhere to put a file.
+
+    One blob PER USER. A single global blob filtered on read would ship every
+    user's rules to every dashboard's 3-second poll, and would sit in the same
+    settings table as everyone else's watchlist.
+    """
+    base = {"updated": now_et(), "market_open": market_is_open(), "dry_run": config.DRY_RUN}
+    by_user = {}
+    for r in rows:
+        by_user.setdefault(r["user_id"], []).append(r)
+    # ponytail: one upsert per user per cycle. Batch into a single executemany if
+    # the cycle's wall clock ever gets tight.
+    for uid, urows in by_user.items():
+        db.set_setting(db.ukey(uid, "snapshot"), json.dumps({**base, "rules": urows}))
 
 
-def snapshot():
-    """The /api/snapshot payload, assembled on read.
+def snapshot(user_id):
+    """The /api/snapshot payload for one user, assembled on read.
 
     `healthy` is computed here, not baked in by the writer, because the failure
     this switch exists to catch — the cron stops firing — means no writer runs at
     all. Deriving it on read is the only way that failure ever becomes visible.
+
+    The health fields are global on purpose: there is one scheduler, so a dead
+    cron means nobody's rules are being monitored and everybody should see it.
     """
-    stored = db.get_setting("snapshot")
+    stored = db.get_setting(db.ukey(user_id, "snapshot"))
     base = json.loads(stored) if stored else {"updated": None, "rules": []}
     stale = db.stale_seconds()
     return {
@@ -229,7 +245,7 @@ def snapshot():
         "last_success_ms": db.last_success_ms(),
         "healthy": stale is not None and stale <= config.DEADMAN_SECONDS,
         "deadman_seconds": config.DEADMAN_SECONDS,
-        "alerts": db.list_alerts(50),
+        "alerts": db.list_alerts(user_id, 50),
     }
 
 
@@ -306,15 +322,24 @@ def run_demo():
 
 
 # --- on-demand endpoints (Watchlist / Backtest) ---
-_wl_cache = {"ts": 0.0, "data": None}
-
 
 def watchlist(series_provider=None, ttl=20):
-    """Live price + RSI for every watched symbol × timeframe (the Watchlist grid)."""
+    """Live price + RSI for every watched symbol × timeframe (the Watchlist grid).
+
+    The cache lives in the settings table, not a module global. Serverless gives
+    every request a fresh process, so an in-memory cache is a guaranteed miss —
+    which made each page-load 24 upstream fetches. A signed-in stranger holding
+    F5 here burns market-data quota with zero rules, so the per-user rule cap
+    does nothing about it. One global row: the grid is the same for everyone.
+    """
     provider = _provider(series_provider)
     now = time.time()
-    if series_provider is None and _wl_cache["data"] is not None and now - _wl_cache["ts"] < ttl:
-        return _wl_cache["data"]  # ponytail: 20s TTL so page polls don't refetch 24 series each time
+    if series_provider is None:
+        cached = db.get_setting("watchlist")
+        if cached:
+            blob = json.loads(cached)
+            if now - blob["ts"] < ttl:
+                return blob["data"]
     out = []
     for sym in config.SYMBOLS:
         price, rows = None, []
@@ -327,7 +352,7 @@ def watchlist(series_provider=None, ttl=20):
                 rows.append({"timeframe": tf, "rsi": None})
         out.append({"symbol": sym, "price": None if price is None else round(price, 2), "rows": rows})
     if series_provider is None:
-        _wl_cache.update(ts=now, data=out)
+        db.set_setting("watchlist", json.dumps({"ts": now, "data": out}))
     return out
 
 

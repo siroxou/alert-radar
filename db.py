@@ -79,21 +79,46 @@ def init():
         if not pg:
             _exec(c, "PRAGMA journal_mode=WAL")
         _exec(c, """CREATE TABLE IF NOT EXISTS rules(
-            id TEXT PRIMARY KEY, name TEXT, symbol TEXT, timeframe TEXT,
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT, symbol TEXT, timeframe TEXT,
             condition TEXT, enabled INTEGER DEFAULT 1, created_at TEXT)""")
+        # rule_state is NOT user-scoped, on purpose: rule ids are uuid4-derived and
+        # globally unique, and rule_id is this table's primary key, so per-rule dedup
+        # already IS per-user dedup. Adding user_id would widen the edge-claim
+        # predicate without changing which row it hits.
         _exec(c, f"""CREATE TABLE IF NOT EXISTS rule_state(
             rule_id TEXT PRIMARY KEY, fired INTEGER DEFAULT 0,
             last_value {real}, last_fired_at TEXT)""")
+        # alerts carry their own user_id rather than joining rules: delete_rule
+        # deliberately leaves history behind, and a join would erase it.
         _exec(c, f"""CREATE TABLE IF NOT EXISTS alerts(
-            id {serial}, rule_id TEXT, name TEXT,
+            id {serial}, user_id TEXT NOT NULL, rule_id TEXT, name TEXT,
             symbol TEXT, timeframe TEXT, description TEXT,
             value {real}, price {real}, ts TEXT, ts_ms {bigint})""")
         _exec(c, "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+        if pg:
+            # The deployed tables predate per-user accounts and CREATE TABLE IF NOT
+            # EXISTS skips them, so migrate in place. Idempotent and additive, which
+            # beats a manual DROP + redeploy: that has a window where a warm process
+            # answers requests against tables that no longer exist.
+            _exec(c, "ALTER TABLE rules  ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''")
+            _exec(c, "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''")
         if not pg:
-            # migrate older SQLite files that predate ts_ms (epoch ms for "triggered X ago").
-            # Fresh databases of either dialect already declare the column above.
-            if "ts_ms" not in [r["name"] for r in _exec(c, "PRAGMA table_info(alerts)")]:
+            # migrate older SQLite files: ts_ms (epoch ms for "triggered X ago") and
+            # user_id both postdate existing dev databases, and CREATE TABLE IF NOT
+            # EXISTS silently skips them. Fresh databases declare both above.
+            acols = {r["name"] for r in _exec(c, "PRAGMA table_info(alerts)")}
+            if "ts_ms" not in acols:
                 _exec(c, "ALTER TABLE alerts ADD COLUMN ts_ms INTEGER")
+            # DEFAULT '' only on the migration path: SQLite requires one, and rows
+            # owned by nobody are invisible to every account until adopted by hand.
+            if "user_id" not in acols:
+                _exec(c, "ALTER TABLE alerts ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            if "user_id" not in {r["name"] for r in _exec(c, "PRAGMA table_info(rules)")}:
+                _exec(c, "ALTER TABLE rules ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        # AFTER the migration, never before: on a pre-existing database the columns
+        # these index do not exist until the ALTERs above have run.
+        _exec(c, "CREATE INDEX IF NOT EXISTS idx_rules_user ON rules(user_id)")
+        _exec(c, "CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, id DESC)")
 
 
 def get_setting(key, default=None):
@@ -120,52 +145,86 @@ def claim_once(key):
         return cur.rowcount == 1
 
 
+# --- per-user settings -----------------------------------------------------
+# Bare keys stay SYSTEM state (snapshot heartbeat, deadman_fired, seeded); user
+# state is namespaced. The id is a server-supplied uuid, so "u:<uuid>:<name>"
+# can never collide with a system key. No scope column, no second table.
+
+def ukey(user_id, name):
+    return f"u:{user_id}:{name}"
+
+
+def user_recipients(user_id):
+    v = get_setting(ukey(user_id, "recipients"))
+    return [e.strip() for e in v.split(",") if e.strip()] if v else []
+
+
+def set_user_recipients(user_id, emails):
+    set_setting(ukey(user_id, "recipients"), ",".join(emails))
+
+
 def _row_to_rule(r):
     return {
-        "id": r["id"], "name": r["name"], "symbol": r["symbol"], "timeframe": r["timeframe"],
-        "condition": json.loads(r["condition"]), "enabled": bool(r["enabled"]),
-        "created_at": r["created_at"],
+        "id": r["id"], "user_id": r["user_id"], "name": r["name"], "symbol": r["symbol"],
+        "timeframe": r["timeframe"], "condition": json.loads(r["condition"]),
+        "enabled": bool(r["enabled"]), "created_at": r["created_at"],
     }
 
 
-def list_rules(enabled_only=False):
-    q = "SELECT * FROM rules"
+# user_id is a REQUIRED positional on every user-facing read. A `user_id=None
+# means all` default would turn one forgotten argument into a silent cross-user
+# leak; the engine's cross-user read gets its own name instead.
+
+def list_rules(user_id, enabled_only=False):
+    q = "SELECT * FROM rules WHERE user_id=?"
     if enabled_only:
-        q += " WHERE enabled=1"
+        q += " AND enabled=1"
     q += " ORDER BY created_at"
     with _db() as c:
-        return [_row_to_rule(r) for r in _exec(c, q)]
+        return [_row_to_rule(r) for r in _exec(c, q, (user_id,))]
 
 
-def get_rule(rid):
+def all_enabled_rules():
+    """Every user's enabled rules — the evaluation cycle, and nothing else."""
     with _db() as c:
-        r = _exec(c, "SELECT * FROM rules WHERE id=?", (rid,)).fetchone()
+        return [_row_to_rule(r) for r in
+                _exec(c, "SELECT * FROM rules WHERE enabled=1 ORDER BY created_at")]
+
+
+def get_rule(rid, user_id):
+    with _db() as c:
+        r = _exec(c, "SELECT * FROM rules WHERE id=? AND user_id=?", (rid, user_id)).fetchone()
         return _row_to_rule(r) if r else None
 
 
-def create_rule(rule):
+def create_rule(rule, user_id):
     with _db(write=True) as c:
         _exec(c,
-              "INSERT INTO rules(id,name,symbol,timeframe,condition,enabled,created_at) VALUES(?,?,?,?,?,?,?)",
-              (rule["id"], rule["name"], rule["symbol"], rule["timeframe"],
+              "INSERT INTO rules(id,user_id,name,symbol,timeframe,condition,enabled,created_at) "
+              "VALUES(?,?,?,?,?,?,?,?)",
+              (rule["id"], user_id, rule["name"], rule["symbol"], rule["timeframe"],
                json.dumps(rule["condition"]), int(rule.get("enabled", True)),
                datetime.now(ET).isoformat()))
-    return get_rule(rule["id"])
+    return get_rule(rule["id"], user_id)
 
 
-def update_rule(rid, rule):
+def update_rule(rid, rule, user_id):
     with _db(write=True) as c:
         _exec(c,
-              "UPDATE rules SET name=?,symbol=?,timeframe=?,condition=?,enabled=? WHERE id=?",
+              "UPDATE rules SET name=?,symbol=?,timeframe=?,condition=?,enabled=? "
+              "WHERE id=? AND user_id=?",
               (rule["name"], rule["symbol"], rule["timeframe"], json.dumps(rule["condition"]),
-               int(rule.get("enabled", True)), rid))
-    return get_rule(rid)
+               int(rule.get("enabled", True)), rid, user_id))
+    return get_rule(rid, user_id)
 
 
-def delete_rule(rid):
+def delete_rule(rid, user_id):
     with _db(write=True) as c:
-        _exec(c, "DELETE FROM rules WHERE id=?", (rid,))
-        _exec(c, "DELETE FROM rule_state WHERE rule_id=?", (rid,))
+        cur = _exec(c, "DELETE FROM rules WHERE id=? AND user_id=?", (rid, user_id))
+        # only clear dedup state if OUR row actually went: an unscoped delete here
+        # lets a foreign delete attempt un-latch someone else's rule and re-alert them
+        if cur.rowcount:
+            _exec(c, "DELETE FROM rule_state WHERE rule_id=?", (rid,))
 
 
 def record_transition(rule_id, fired, value):
@@ -190,18 +249,22 @@ def record_transition(rule_id, fired, value):
 
 
 def append_alert(rule, description, value, price):
+    # rule["user_id"], not .get(): an alert with no owner is one nobody can ever
+    # see, and it should fail in tests rather than vanish in production.
     with _db(write=True) as c:
         _exec(c,
-              "INSERT INTO alerts(rule_id,name,symbol,timeframe,description,value,price,ts,ts_ms) "
-              "VALUES(?,?,?,?,?,?,?,?,?)",
-              (rule["id"], rule["name"], rule["symbol"], rule["timeframe"], description, value, price,
+              "INSERT INTO alerts(user_id,rule_id,name,symbol,timeframe,description,value,price,ts,ts_ms) "
+              "VALUES(?,?,?,?,?,?,?,?,?,?)",
+              (rule["user_id"], rule["id"], rule["name"], rule["symbol"], rule["timeframe"],
+               description, value, price,
                datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"), int(time.time() * 1000)))
 
 
-def list_alerts(limit=50):
+def list_alerts(user_id, limit=50):
     limit = max(1, min(int(limit), 500))  # bounded: the table grows without limit
     with _db() as c:
-        return [dict(r) for r in _exec(c, "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,))]
+        return [dict(r) for r in _exec(
+            c, "SELECT * FROM alerts WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit))]
 
 
 # --- dead-man heartbeat ----------------------------------------------------

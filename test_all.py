@@ -142,12 +142,13 @@ def test_db():
     db.init()
     rule = db.create_rule({"id": "r1", "name": "t", "symbol": "AAPL", "timeframe": "5min",
                            "condition": {"type": "rsi", "threshold": 15, "direction": "below"},
-                           "enabled": True})
+                           "enabled": True}, "userA")
     assert rule["id"] == "r1" and rule["condition"]["type"] == "rsi"
-    assert len(db.list_rules()) == 1
-    db.update_rule("r1", {**rule, "name": "t2", "enabled": False})
-    assert db.get_rule("r1")["name"] == "t2"
-    assert db.list_rules(enabled_only=True) == []
+    assert rule["user_id"] == "userA"
+    assert len(db.list_rules("userA")) == 1
+    db.update_rule("r1", {**rule, "name": "t2", "enabled": False}, "userA")
+    assert db.get_rule("r1", "userA")["name"] == "t2"
+    assert db.list_rules("userA", enabled_only=True) == []
 
     # dedup state machine: fire once → hold → reset → re-fire
     assert db.record_transition("r1", True, 10) is True
@@ -160,75 +161,190 @@ def test_db():
     assert db.claim_once("unit-test-claim") is False
 
     db.append_alert(rule, "RSI below 15", 8.0, 150.0)
-    assert len(db.list_alerts()) == 1
-    assert db.list_alerts(limit=10_000) is not None  # limit is clamped, not trusted
-    db.delete_rule("r1")
-    assert db.list_rules() == [] and db.get_rule("r1") is None
+    assert len(db.list_alerts("userA")) == 1
+    assert db.list_alerts("userA", limit=10_000) is not None  # limit is clamped, not trusted
+    db.delete_rule("r1", "userA")
+    assert db.list_rules("userA") == [] and db.get_rule("r1", "userA") is None
     print("  ✓ db OK (CRUD + fire-once/hold/reset/re-fire dedup + claim_once)")
+
+
+def test_user_isolation():
+    print("Testing per-user isolation (db layer)...")
+    db.init()
+    A, B = "isoA", "isoB"  # ids unique to this test: one SQLite file is shared by all of them
+    mk = lambda rid: {"id": rid, "name": rid, "symbol": "AAPL", "timeframe": "5min",
+                      "condition": {"type": "rsi", "threshold": 15, "direction": "below"}, "enabled": True}
+    a1 = db.create_rule(mk("a1"), A)
+    db.create_rule(mk("b1"), B)
+
+    assert [r["id"] for r in db.list_rules(A)] == ["a1"]
+    assert [r["id"] for r in db.list_rules(B)] == ["b1"]
+    assert {r["id"] for r in db.all_enabled_rules()} >= {"a1", "b1"}  # the engine sees everyone
+
+    # no cross-user read or write
+    assert db.get_rule("a1", B) is None
+    assert db.update_rule("a1", {**a1, "name": "pwned"}, B) is None
+    assert db.get_rule("a1", A)["name"] != "pwned"
+
+    # a foreign delete must not un-latch someone else's dedup state, or the next
+    # cycle re-alerts them for a rule that never reset
+    assert db.record_transition("a1", True, 10) is True
+    db.delete_rule("a1", B)
+    assert db.get_rule("a1", A) is not None, "foreign delete removed the rule"
+    assert db.record_transition("a1", True, 10) is False, "foreign delete cleared rule_state"
+
+    # alerts are scoped too, and history survives its rule being deleted
+    db.append_alert(a1, "RSI below 15", 8.0, 150.0)
+    assert len(db.list_alerts(A)) == 1 and db.list_alerts(B) == []
+    db.delete_rule("a1", A)
+    assert len(db.list_alerts(A)) == 1, "deleting a rule must not erase its history"
+
+    # per-user recipients: never fall back to the operator's address
+    config.DEFAULT_EMAIL_RECIPIENTS = ["ops@x.com"]
+    db.set_user_recipients(A, ["a@x.com"])
+    assert db.user_recipients(A) == ["a@x.com"]
+    assert db.user_recipients("stranger") == [], "a stranger's alerts must not route to ops"
+    print("  ✓ isolation OK (no cross-user read/write/delete, scoped alerts + recipients)")
+
+
+def test_sqlite_migration():
+    """A database written before per-user accounts must migrate, not crash.
+
+    CREATE TABLE IF NOT EXISTS silently skips tables that already exist, so an
+    existing dev file keeps the old shape until the ALTERs run — and anything that
+    depends on the new columns (the user indexes) has to come after them, not
+    before. A fresh-file test cannot catch that ordering.
+    """
+    print("Testing db.init() against a pre-user_id database...")
+    import sqlite3
+    legacy = _TMP / "legacy.db"
+    conn = sqlite3.connect(legacy)
+    conn.executescript("""
+        CREATE TABLE rules(id TEXT PRIMARY KEY, name TEXT, symbol TEXT, timeframe TEXT,
+                           condition TEXT, enabled INTEGER DEFAULT 1, created_at TEXT);
+        CREATE TABLE alerts(id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT, name TEXT,
+                            symbol TEXT, timeframe TEXT, description TEXT,
+                            value REAL, price REAL, ts TEXT);
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO rules VALUES('old1','legacy','SPY','5min',
+            '{"type":"rsi","threshold":15,"direction":"below"}',1,'2026-01-01T00:00:00');
+        INSERT INTO alerts(rule_id,name,symbol,timeframe,description,value,price,ts)
+            VALUES('old1','legacy','SPY','5min','RSI below 15',9.0,500.0,'2026-01-01 10:00:00 ET');
+    """)
+    conn.commit()
+    conn.close()
+
+    prev = config.DB_FILE
+    config.DB_FILE = legacy
+    try:
+        db.init()  # must not raise
+        # legacy rows survive, owned by nobody, and are invisible to every account
+        assert [r["id"] for r in db.list_rules("")] == ["old1"], "legacy rules lost in migration"
+        assert db.list_rules("someone") == []
+        assert len(db.list_alerts("")) == 1, "legacy history lost in migration"
+        # the columns really landed, both the old ts_ms migration and the new one
+        assert "ts_ms" in db.list_alerts("")[0]
+        db.set_user_recipients("someone", ["x@y.com"])
+        assert db.user_recipients("someone") == ["x@y.com"]
+        db.init()  # idempotent: a second cold start must not re-ALTER and blow up
+    finally:
+        config.DB_FILE = prev
+    print("  ✓ migration OK (legacy rows kept + unowned, indexes after ALTER, idempotent)")
 
 
 def test_notifier_dry_run():
     print("Testing notifier.py (email-only, dry-run, batched)...")
     base = {"symbol": "AAPL", "timeframe": "5min", "name": "t"}
     ts = "2026-07-09 10:00:00 ET"
+    to = ["a@x.com"]
 
-    r = notifier.send(base, "RSI below 15", 12.3, 150.0, ts, dry_run=True)
+    r = notifier.send(base, "RSI below 15", 12.3, 150.0, ts, to, dry_run=True)
     assert set(r) == {"email"} and r["email"]["sent"] is False
     assert r["email"]["subject"].endswith("RSI below 15")
 
-    # a cycle's fires go out as ONE request, one result per fire
+    # one user's fires go out as ONE request, one result per fire
     fires = [(base, "RSI below 15", 12.3, 150.0), ({**base, "symbol": "NVDA"}, "RSI above 85", 91.0, 180.0)]
-    rs = notifier.send_batch(fires, ts, dry_run=True)
+    rs = notifier.send_batch(fires, ts, to, dry_run=True)
     assert len(rs) == 2 and all(x["sent"] is False for x in rs)
-    assert "NVDA" in rs[1]["subject"]
-    assert notifier.send_batch([], ts, dry_run=True) == []
-    print("  ✓ notifier OK (email-only, dry-run, batch)")
+    assert "NVDA" in rs[1]["subject"] and rs[0]["to"] == to
+    assert notifier.send_batch([], ts, to, dry_run=True) == []
+
+    # a user with no recipients logs instead of sending — it must NOT reach for
+    # DEFAULT_EMAIL_RECIPIENTS, which would post their alerts to the operator
+    config.DEFAULT_EMAIL_RECIPIENTS = ["ops@x.com"]
+    assert all(x["to"] == [] for x in notifier.send_batch(fires, ts, [], dry_run=True))
+
+    # the dead-man email is ops mail: it reads config, never the database, because
+    # an unreachable db is a leading cause of the dead cycle it exists to report
+    real = db.get_setting
+    db.get_setting = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down"))
+    try:
+        assert notifier.send_deadman("x", 999, dry_run=True)["to"] == ["ops@x.com"]
+    finally:
+        db.get_setting = real
+    print("  ✓ notifier OK (per-user batch, no operator fallback, deadman needs no db)")
 
 
 def test_engine_cycle():
-    print("Testing engine.run_once (demo series, dedup)...")
+    print("Testing engine.run_once (demo series, dedup, per-user delivery)...")
     db.init()
-    for r in db.list_rules():
-        db.delete_rule(r["id"])
-    # a rule that always fires (price below a huge level) → tests fire-once + snapshot
+    A, B = "engA", "engB"  # ids unique to this test: one SQLite file is shared by all of them
+    # every OTHER user's rules must be off the books, or their fires land in the
+    # per-user delivery assertions below
+    for r in db.all_enabled_rules():
+        db.delete_rule(r["id"], r["user_id"])
+    # rules that always fire (price below a huge level) → tests fire-once + snapshot.
+    # Both users watch the SAME symbol×timeframe, which is what makes the cache
+    # assertion below meaningful.
+    always = {"type": "price", "level": 1_000_000_000, "direction": "below"}
     db.create_rule({"id": "always", "name": "always", "symbol": "AAPL", "timeframe": "5min",
-                    "condition": {"type": "price", "level": 1_000_000_000, "direction": "below"},
-                    "enabled": True})
-    engine.run_once(series_provider=engine.demo_series)
-    snap = engine.snapshot()
-    assert snap["rules"] and snap["rules"][0]["fired"] is True
+                    "condition": always, "enabled": True}, A)
+    db.create_rule({"id": "alwaysB", "name": "alwaysB", "symbol": "AAPL", "timeframe": "5min",
+                    "condition": always, "enabled": True}, B)
+    db.set_user_recipients(A, ["a@x.com"])
+    db.set_user_recipients(B, ["b@x.com"])
+
+    # one upstream fetch per symbol×timeframe per cycle, no matter how many users
+    # share it. Grouping fires by user invites a per-user outer loop, which would
+    # silently multiply the paid market-data bill by the user count.
+    calls, sent = [], []
+    def counting(sym, tf):
+        calls.append((sym, tf))
+        return engine.demo_series(sym, tf)
+    real_send = notifier.send_batch
+    notifier.send_batch = lambda fires, ts, recipients, **k: sent.append(
+        (tuple(recipients), {f[0]["user_id"] for f in fires}))
+    try:
+        engine.run_once(series_provider=counting)
+    finally:
+        notifier.send_batch = real_send
+    assert calls.count(("AAPL", "5min")) == 1, f"one fetch per pair per cycle, got {calls}"
+    assert len(sent) == 2, f"one request per user with fires, not one global batch: {sent}"
+    assert all(len(uids) == 1 for _to, uids in sent), f"a batch carried another user's rule: {sent}"
+    assert {to for to, _ in sent} == {("a@x.com",), ("b@x.com",)}, sent
+
+    # snapshots are per-user: each sees only their own rules and alerts
+    snap = engine.snapshot(A)
+    assert [r["id"] for r in snap["rules"]] == ["always"]
+    assert snap["rules"][0]["fired"] is True
+    assert all(a["rule_id"] == "always" for a in snap["alerts"])
     assert snap["healthy"] is True and snap["last_success_ms"], "snapshot missing dead-man heartbeat"
-    n1 = len(db.list_alerts())
+    # a user with no rules still gets working global health fields
+    fresh = engine.snapshot("nobody")
+    assert fresh["rules"] == [] and fresh["healthy"] is True
+
+    n1 = len(db.list_alerts(A))
     engine.run_once(series_provider=engine.demo_series)  # still fired, not fresh
-    assert len(db.list_alerts()) == n1, "dedup failed: alert re-fired while held"
+    assert len(db.list_alerts(A)) == n1, "dedup failed: alert re-fired while held"
     # alerts carry epoch-ms for the "triggered X ago" counter
-    assert db.list_alerts()[0]["ts_ms"] and db.list_alerts()[0]["ts_ms"] > 0
+    assert db.list_alerts(A)[0]["ts_ms"] and db.list_alerts(A)[0]["ts_ms"] > 0
 
     # `healthy` is derived on read, so a stalled cron surfaces even though nothing
     # ran to write it — the failure the dead-man switch exists to catch
     db.set_setting("last_success_ms", 0)
-    assert engine.snapshot()["healthy"] is False, "stale heartbeat must read as unhealthy"
+    assert engine.snapshot(A)["healthy"] is False, "stale heartbeat must read as unhealthy"
     db.mark_success()
-    print(f"  ✓ engine OK (snapshot from db, {n1} alert, no re-fire while held, staleness on read)")
-
-
-def test_settings_recipients():
-    print("Testing db settings + notifier recipient resolution...")
-    db.init()
-    config.DEFAULT_EMAIL_RECIPIENTS = ["fallback@x.com"]
-    db.set_setting("email_recipients", "")
-    assert notifier._recipients() == ["fallback@x.com"]          # no setting → .env default
-    db.set_setting("email_recipients", "a@x.com, b@y.com")
-    assert notifier._recipients() == ["a@x.com", "b@y.com"]      # saved setting wins
-
-    # an unreachable database must not silence the MONITOR DOWN email
-    real = db.get_setting
-    db.get_setting = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down"))
-    try:
-        assert notifier._recipients() == ["fallback@x.com"], "deadman must fall back when the db throws"
-    finally:
-        db.get_setting = real
-    print("  ✓ settings OK (saved > .env, and env fallback when the db is unreachable)")
+    print(f"  ✓ engine OK ({n1} alert, shared fetch cache, per-user batches + snapshots)")
 
 
 def test_backtest_and_watchlist():
@@ -244,43 +360,71 @@ def test_backtest_and_watchlist():
 
 
 def test_api_auth():
-    print("Testing main.py routes (auth gate, validation, cron secret)...")
+    print("Testing main.py routes (Google session gate, ownership, cap, cron secret)...")
     from fastapi.testclient import TestClient
     import main
 
-    config.DB_FILE = _TMP / "api.db"          # a clean db: the lifespan seeds starter rules
+    config.DB_FILE = _TMP / "api.db"          # a clean db: accounts seed on first read
+    config.SUPABASE_URL = "https://example.supabase.co"
+    config.SESSION_SECRET = "t3st-secret"
     config.AUTH_TOKEN = "s3cret"
     config.CRON_SECRET = "cr0n"
+    config.MAX_RULES_PER_USER = 4
+    good = {"name": "t", "symbol": "AAPL", "timeframe": "5min",
+            "condition": {"type": "rsi", "threshold": 15, "direction": "below"}}
 
     with TestClient(main.app) as c:
-        # unauthenticated: the API refuses, the dashboard shell serves an unlock page
+        # unauthenticated: the API refuses, the dashboard shell serves the sign-in page
         assert c.get("/api/rules").status_code == 401
         assert c.put("/api/settings", json={"email_recipients": ["x@y.com"]}).status_code == 401
         r = c.get("/")
-        assert r.status_code == 401 and "Access token" in r.text, "shell must not render unauthenticated"
+        assert r.status_code == 401 and "Sign in with Google" in r.text, "shell must not render unauthenticated"
 
-        assert c.post("/api/login", json={"token": "wrong"}).status_code == 401
-        assert c.post("/api/login", json={"token": "s3cret"}).status_code == 200  # cookie now on the client
+        # a signed session is accepted; a tampered or expired one is not
+        c.cookies.set(config.SESSION_COOKIE, main.make_session("u1", "u1@x.com"))
         assert c.get("/api/rules").status_code == 200
         assert c.get("/").status_code == 200
+        assert c.get("/api/meta").json()["user"] == "u1@x.com"
+
+        tampered = main.make_session("u1", "u1@x.com")
+        tampered = tampered[:-2] + ("aa" if tampered[-2:] != "aa" else "bb")
+        c.cookies.set(config.SESSION_COOKIE, tampered)
+        assert c.get("/api/rules").status_code == 401, "forged signature must not authenticate"
+        c.cookies.set(config.SESSION_COOKIE, main.make_session("u1", "u1@x.com", days=-1))
+        assert c.get("/api/rules").status_code == 401, "expired session must not authenticate"
 
         # bearer works for API clients that cannot hold a cookie
         c.cookies.clear()
         assert c.get("/api/rules", headers={"Authorization": "Bearer s3cret"}).status_code == 200
         assert c.get("/api/rules", headers={"Authorization": "Bearer nope"}).status_code == 401
-        c.post("/api/login", json={"token": "s3cret"})
 
+        c.cookies.set(config.SESSION_COOKIE, main.make_session("u1", "u1@x.com"))
         # unknown keys are rejected, so a stale client cannot silently write junk
-        good = {"name": "t", "symbol": "AAPL", "timeframe": "5min",
-                "condition": {"type": "rsi", "threshold": 15, "direction": "below"}}
-        assert c.post("/api/rules", json=good).status_code == 200
         assert c.post("/api/rules", json={**good, "channels": ["sms"]}).status_code == 422
         # a symbol reaches an upstream URL path carrying our API key
         assert c.post("/api/rules", json={**good, "symbol": "../../etc"}).status_code == 422
         assert c.post("/api/rules", json={**good, "timeframe": "3min"}).status_code == 422
         assert c.get("/api/alerts?limit=99999").status_code == 422
 
-        # the cron endpoint takes its OWN secret — the dashboard token must not work
+        # open signup on a paid data key: the per-account rule cap has to bite
+        while len(c.get("/api/rules").json()) < config.MAX_RULES_PER_USER:
+            assert c.post("/api/rules", json=good).status_code == 200
+        assert c.post("/api/rules", json=good).status_code == 403, "rule cap not enforced"
+
+        # ownership: another account cannot see, edit or delete u1's rule — and gets
+        # 404 rather than 403, so the id is never confirmed to exist
+        rid = c.get("/api/rules").json()[0]["id"]
+        c.cookies.set(config.SESSION_COOKIE, main.make_session("u2", "u2@x.com"))
+        assert rid not in [r["id"] for r in c.get("/api/rules").json()]
+        assert c.put(f"/api/rules/{rid}", json=good).status_code == 404
+        assert c.delete(f"/api/rules/{rid}").status_code == 404
+        # recipients are per-account too
+        c.put("/api/settings", json={"email_recipients": ["u2@x.com"]})
+        c.cookies.set(config.SESSION_COOKIE, main.make_session("u1", "u1@x.com"))
+        assert c.get("/api/settings").json()["email_recipients"] != ["u2@x.com"]
+
+        # the cron endpoint takes its OWN secret — a user's session must not work
+        c.cookies.clear()
         assert c.get("/api/cron/evaluate").status_code == 401
         assert c.get("/api/cron/evaluate", headers={"Authorization": "Bearer s3cret"}).status_code == 401
         engine.DEMO = True  # keep the cycle off the network
@@ -289,10 +433,13 @@ def test_api_auth():
         finally:
             engine.DEMO = False
 
+    config.SUPABASE_URL = ""
+    config.SESSION_SECRET = ""
     config.AUTH_TOKEN = ""
     config.CRON_SECRET = ""
+    config.MAX_RULES_PER_USER = 25
     config.DB_FILE = _TMP / "test.db"
-    print("  ✓ api OK (cookie + bearer, shell gated, extra=forbid, symbol regex, cron secret)")
+    print("  ✓ api OK (session sign/tamper/expiry, bearer, ownership 404, rule cap, cron secret)")
 
 
 def test_ai():
@@ -335,8 +482,8 @@ def main():
     print("Market Alert System — comprehensive tests (v2)")
     print("=" * 60)
     tests = [test_config, test_indicators, test_conditions, test_market_calendar, test_db,
-             test_notifier_dry_run, test_engine_cycle,
-             test_settings_recipients, test_backtest_and_watchlist, test_api_auth, test_ai]
+             test_user_isolation, test_sqlite_migration, test_notifier_dry_run, test_engine_cycle,
+             test_backtest_and_watchlist, test_api_auth, test_ai]
     passed = failed = 0
     for t in tests:
         try:

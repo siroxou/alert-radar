@@ -2,8 +2,9 @@
 
 SMS/WhatsApp/RCS (sent.dm) were retired — email is the only channel now.
 DRY_RUN (default) or missing credentials/recipients → the payload is logged, not sent.
-A cycle's fires go out as ONE batched request: a correlated move trips many rules
-at once, and per-rule POSTs hit Resend's rate limit and the caller's wall clock together.
+A cycle's fires go out as ONE batched request per user: a correlated move trips
+many rules at once, and per-rule POSTs hit Resend's rate limit and the caller's
+wall clock together.
 """
 import logging
 from html import escape
@@ -11,7 +12,6 @@ from html import escape
 import requests
 
 import config
-import db
 
 logger = logging.getLogger("rsi_alerts")
 RESEND_URL = "https://api.resend.com/emails"
@@ -19,34 +19,21 @@ RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
 BATCH_MAX = 100  # Resend's per-request ceiling
 
 
-def _recipients():
-    """Resolve who gets the email: saved Settings → .env default.
-
-    Falls back to the env default when the settings read *throws*, not just when
-    it comes back empty — an unreachable database is a leading cause of the dead
-    cycle this module has to warn about, and the warning must still go out.
-    """
-    try:
-        saved = db.get_setting("email_recipients")
-    except Exception:
-        logger.exception("recipient lookup failed — falling back to DEFAULT_EMAIL_RECIPIENTS")
-        return config.DEFAULT_EMAIL_RECIPIENTS
-    if saved:
-        return [e.strip() for e in saved.split(",") if e.strip()]
-    return config.DEFAULT_EMAIL_RECIPIENTS
-
-
 def _subject(rule, description):
     return f"\U0001F6A8 {rule['symbol']} {rule['timeframe']} — {description}"
 
 
-def send_batch(fires, timestamp, dry_run=None):
+def send_batch(fires, timestamp, recipients, dry_run=None):
     """Deliver one email per fired rule in a single request.
 
-    `fires` is a list of (rule, description, value, price).
+    `fires` is a list of (rule, description, value, price), all owned by ONE user.
+    `recipients` is a required positional so every call site has to say whose mail
+    this is — there is deliberately no default to fall into. An empty list logs
+    instead of sending, which is the correct outcome for a user who never set one:
+    falling back to DEFAULT_EMAIL_RECIPIENTS here would post a stranger's alerts
+    to the operator's inbox.
     """
     dry = config.DRY_RUN if dry_run is None else dry_run
-    recipients = _recipients()
     results = [{"sent": False, "to": recipients, "subject": _subject(r, d)} for r, d, _v, _p in fires]
     if not fires:
         return results
@@ -63,7 +50,9 @@ def send_batch(fires, timestamp, dry_run=None):
     headers = {"Authorization": f"Bearer {config.RESEND_API_KEY}", "Content-Type": "application/json"}
     for start in range(0, len(payload), BATCH_MAX):
         chunk = payload[start:start + BATCH_MAX]
-        resp = requests.post(RESEND_BATCH_URL, timeout=15, headers=headers, json=chunk)
+        # 10s, not 15: a cycle now makes one request per user-with-fires, and the
+        # whole cycle has to finish inside the function's 60s ceiling.
+        resp = requests.post(RESEND_BATCH_URL, timeout=10, headers=headers, json=chunk)
         resp.raise_for_status()
         for res in results[start:start + BATCH_MAX]:
             res.update(sent=True, status=resp.status_code)
@@ -71,15 +60,20 @@ def send_batch(fires, timestamp, dry_run=None):
     return results
 
 
-def send(rule, description, value, price, timestamp, dry_run=None):
+def send(rule, description, value, price, timestamp, recipients, dry_run=None):
     """Single-rule convenience wrapper over send_batch."""
-    return {"email": send_batch([(rule, description, value, price)], timestamp, dry_run)[0]}
+    return {"email": send_batch([(rule, description, value, price)], timestamp, recipients, dry_run)[0]}
 
 
 def send_deadman(reason, stale_seconds, dry_run=None):
-    """Dead-man's switch: the eval loop hasn't completed a cycle in too long → warn ops."""
+    """Dead-man's switch: the eval loop hasn't completed a cycle in too long → warn ops.
+
+    Reads config only, never the database: an unreachable db is a leading cause of
+    the dead cycle this email exists to report, and the warning must still go out.
+    This is ops mail, not user mail — it never routes through per-user recipients.
+    """
     dry = config.DRY_RUN if dry_run is None else dry_run
-    recipients = _recipients()
+    recipients = config.DEFAULT_EMAIL_RECIPIENTS
     subject = "⚠️ Alert Radar monitor is DOWN — no successful cycle"
     if dry or not config.RESEND_API_KEY or not recipients:
         why = "DRY_RUN" if dry else "missing RESEND_API_KEY/recipients"

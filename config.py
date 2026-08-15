@@ -41,15 +41,32 @@ EMAIL_FROM = os.environ.get("EMAIL_FROM", "Alert Radar <alerts@syncsolutions.ai>
 DEFAULT_EMAIL_RECIPIENTS = [e.strip() for e in os.environ.get("DEFAULT_EMAIL_RECIPIENTS", "").split(",") if e.strip()]
 
 # --- Auth -----------------------------------------------------------------
-# One shared password gates the dashboard and the API. The browser trades it for
-# an httpOnly cookie (never readable by the Tailwind CDN script or by XSS); API
-# clients may send it as `Authorization: Bearer <token>` instead.
-# CRON_SECRET is deliberately a SEPARATE secret: Vercel Cron sends it, and a
-# dashboard user must not be able to force evaluation cycles.
+# Google sign-in via Supabase, server-side PKCE. FastAPI does the code exchange
+# and mints its OWN HMAC-signed httpOnly cookie, so no Supabase JWT ever reaches
+# the browser — index.html loads a third-party CDN script and must never be able
+# to read the session. (supabase-js would park the JWT in localStorage, which is
+# exactly the property this arrangement exists to avoid.)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")  # publishable; public by design
+SESSION_SECRET = os.environ.get("SESSION_SECRET", "")        # signs our cookie; rotating it logs everyone out
+SITE_URL = (os.environ.get("SITE_URL", "").rstrip("/")
+            or (f"https://{os.environ['VERCEL_URL']}" if os.environ.get("VERCEL_URL") else ""))
+
+# Bearer-only escape hatch for curl/CLI/ops — no longer a browser login. It acts
+# as OPERATOR_USER_ID so every code path still carries a real, non-null owner.
+# CRON_SECRET is deliberately a SEPARATE secret: the scheduler sends it, and a
+# signed-in user must not be able to force cycles (each spends market-data quota
+# and can send mail).
 AUTH_TOKEN = os.environ.get("ALERT_RADAR_TOKEN", "")
+OPERATOR_USER_ID = os.environ.get("OPERATOR_USER_ID", "operator")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
 SESSION_COOKIE = "ar_session"
-# ponytail: one shared password, no user table. Add per-user auth when there are users.
+PKCE_COOKIE = "ar_pkce"
+LOCAL_USER_ID = "local"  # identity when nothing is configured (dev); refused outright when deployed
+
+# Open signup means unbounded strangers on a paid market-data key. This bounds
+# spend without blocking anyone.
+MAX_RULES_PER_USER = int(os.environ.get("MAX_RULES_PER_USER", 25))
 
 # --- Server ---
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", 8000))

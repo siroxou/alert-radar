@@ -393,13 +393,7 @@
                 <span><span class="font-extrabold">Webhooks &amp; API keys</span> <span class="chip chip-amber ml-1">Coming soon</span><span class="sub block">Push alert events to your own endpoints</span></span>
               </div>
             </div>
-            <div class="clay p-6 opacity-90">
-              <h2 class="section-title mb-3">Account &amp; team</h2>
-              <div class="flex items-center gap-3">
-                <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--coral-soft);color:var(--coral)" data-icon="users"></span>
-                <span><span class="font-extrabold">Multi-user access</span> <span class="chip chip-amber ml-1">Coming soon</span><span class="sub block">Per-user rules, recipients, and roles for your team.</span></span>
-              </div>
-            </div>
+            <div class="clay p-6" id="account-card"></div>
           </div>
         </div>
       </section>
@@ -508,8 +502,10 @@ const tfLabel = (v) => (META && (META.timeframes.find((t) => t.value === v) || {
 
 // when the page is opened as a file (not served by the app), talk to the local service directly
 const API_BASE = location.protocol.startsWith('http') && location.host ? '' : 'http://localhost:8000';
-// The session lives in an httpOnly cookie, so it is never readable from JS —
-// `credentials` is the whole auth story on this side.
+// Sign-in is Google, but the session that comes back is an HMAC-signed cookie
+// minted by our own server, not a Supabase JWT — and it is httpOnly, so it is
+// never readable from JS (this page loads a third-party CDN script). That makes
+// `credentials` the whole auth story on this side.
 async function api(path, opts = {}) {
   const r = await fetch(API_BASE + path, { credentials: 'include', ...opts });
   if (!r.ok) {
@@ -897,11 +893,25 @@ function renderSettings() {
     </div>
     <p class="sub mt-3">Emails send to your saved recipients (set above).</p>`;
   el('set-timeframes').innerHTML = (META ? META.timeframes : []).map((t) => `<span class="chip chip-violet">${t.label}</span>`).join('');
+  // signed out / no auth configured (local dev) → render nothing rather than an empty shell
+  el('account-card').innerHTML = (META && META.user)
+    ? `<h2 class="section-title mb-3">Account</h2>
+       <div class="flex items-center gap-3">
+         <span class="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0" style="background:var(--violet-soft);color:var(--violet-deep)">${svg('users', 'w-5 h-5')}</span>
+         <div class="min-w-0 flex-1"><p class="font-extrabold truncate">${esc(META.user)}</p><p class="sub text-xs">Your rules and alerts are private to this account.</p></div>
+       </div>
+       <button type="button" class="btn-soft mt-4" onclick="signOut()">Sign out</button>`
+    : '';
   const recips = (settingsCache && settingsCache.email_recipients) || [];
   el('recip-input').value = recips.join(', ');
   el('recip-note').textContent = recips.length
-    ? 'Delivering to: ' + recips.join(', ') + (settingsCache.using_default ? ' (from .env default — save to override)' : '')
+    ? 'Delivering to: ' + recips.join(', ')
     : 'No recipients set — alerts won’t be delivered until you add one.';
+}
+
+async function signOut() {
+  try { await fetch(API_BASE + '/api/logout', { method: 'POST', credentials: 'include' }); } catch {}
+  location.reload();  // an unauthenticated GET / serves the sign-in page
 }
 
 /* ================= modal ================= */
