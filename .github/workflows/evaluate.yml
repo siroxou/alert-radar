@@ -11,9 +11,13 @@ name: Evaluate alert rules
 
 on:
   schedule:
-    # every 5 minutes, weekdays, 13:00-21:00 UTC — covers 9:30-16:00 ET in both
-    # EST and EDT. Outside market hours the endpoint idles cheaply anyway.
-    - cron: "*/5 13-21 * * 1-5"
+    # BACKUP ONLY. cron-job.org drives the real 1-minute cadence; this exists so a
+    # dead scheduler is not a dead monitor. Deliberately every 30 minutes, not 5 —
+    # running both at full rate burns market-data quota for nothing. Overlap is
+    # safe regardless: the dedup edge-claim is `UPDATE ... WHERE fired=0`, so two
+    # concurrent cycles cannot both decide a rule fired.
+    # Weekdays 13:00-21:00 UTC covers 9:30-16:00 ET in both EST and EDT.
+    - cron: "*/30 13-21 * * 1-5"
   workflow_dispatch: {}
 
 concurrency:
