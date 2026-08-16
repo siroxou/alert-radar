@@ -17,6 +17,7 @@ config.DATABASE_URL = ""  # force the SQLite path regardless of the developer's 
 config.DRY_RUN = True  # forces notifier into dry-run (logs, never sends)
 
 import ai
+import alpaca_client
 import conditions
 import db
 import engine
@@ -359,6 +360,70 @@ def test_backtest_and_watchlist():
     print(f"  ✓ backtest/watchlist OK (1 fire over 59 bars, {len(wl)} symbols)")
 
 
+def test_stream_aggregation():
+    """Folding streamed 1-minute bars into 5/15/60-minute series.
+
+    This is the only genuinely new logic in the websocket path, and it is the kind
+    that fails silently: an off-by-one in bucket completion shifts every alert by
+    one bar, and a timezone slip shifts hourly buckets by an hour for half the year.
+    """
+    print("Testing stream.py (bar bucketing, no network)...")
+    import stream
+
+    # timestamps are UTC and must be read as UTC. mktime() would read them as
+    # local time, and `- time.timezone` ignores DST.
+    assert stream.epoch_minute("2026-08-17T13:35:00Z") % 60 == 35
+    assert stream.epoch_minute("2026-01-17T13:35:00Z") % 60 == 35   # DST-free month agrees
+    assert stream.epoch_minute("2026-08-17T14:00:00Z") % 60 == 0
+    base = stream.epoch_minute("2026-08-17T13:00:00Z")
+    assert stream.epoch_minute("2026-08-17T14:00:00Z") - base == 60
+
+    stream._SERIES.clear(); stream._PENDING.clear()
+    for tf in ("1min", "5min", "15min", "1hour"):
+        stream._SERIES[("TEST", tf)] = []
+
+    # one clean UTC hour, 13:00-13:59, close = minute number
+    for m in range(60):
+        stream.apply_bar("TEST", base + m, float(m))
+
+    # 1min takes every bar; the others only on bucket close, and the value stored
+    # is the LAST minute of the bucket, not the first
+    assert stream._SERIES[("TEST", "1min")] == [float(m) for m in range(60)]
+    assert stream._SERIES[("TEST", "5min")] == [4.0, 9.0, 14.0, 19.0, 24.0, 29.0,
+                                                34.0, 39.0, 44.0, 49.0, 54.0, 59.0]
+    assert stream._SERIES[("TEST", "15min")] == [14.0, 29.0, 44.0, 59.0]
+    assert stream._SERIES[("TEST", "1hour")] == [59.0]
+
+    # a bucket only closes on its LAST minute — no lag, and no early fire
+    stream._SERIES[("TEST", "5min")] = []
+    for m in range(60, 64):                      # 14:00-14:03, bucket incomplete
+        stream.apply_bar("TEST", base + m, 1.0)
+    assert stream._SERIES[("TEST", "5min")] == [], "bucket closed early"
+    assert stream.apply_bar("TEST", base + 64, 7.0) is True, "bucket did not close on its last minute"
+    assert stream._SERIES[("TEST", "5min")] == [7.0]
+
+    # pairs nobody has a rule for are ignored rather than silently accumulating
+    assert stream.apply_bar("NOSUCH", base, 1.0) is False
+    assert ("NOSUCH", "5min") not in stream._SERIES
+
+    # series stay bounded — this runs for months without a restart
+    stream._SERIES[("TEST", "1min")] = [0.0] * (alpaca_client.MAX_BARS + 50)
+    stream.apply_bar("TEST", base + 200, 1.0)
+    assert len(stream._SERIES[("TEST", "1min")]) == alpaca_client.MAX_BARS
+
+    # the symbol cap must drop deterministically, not by set-iteration luck
+    saved = config.MAX_STREAM_SYMBOLS
+    config.MAX_STREAM_SYMBOLS = 2
+    try:
+        got = stream.wanted_symbols({("NVDA", "5min"), ("AAPL", "5min"), ("SPY", "1min")})
+        assert got == ["AAPL", "NVDA"], got
+    finally:
+        config.MAX_STREAM_SYMBOLS = saved
+
+    stream._SERIES.clear(); stream._PENDING.clear()
+    print("  ✓ stream OK (UTC buckets, close-on-last-minute, bounded, deterministic cap)")
+
+
 def test_api_auth():
     print("Testing main.py routes (Google session gate, ownership, cap, cron secret)...")
     from fastapi.testclient import TestClient
@@ -483,7 +548,7 @@ def main():
     print("=" * 60)
     tests = [test_config, test_indicators, test_conditions, test_market_calendar, test_db,
              test_user_isolation, test_sqlite_migration, test_notifier_dry_run, test_engine_cycle,
-             test_backtest_and_watchlist, test_api_auth, test_ai]
+             test_backtest_and_watchlist, test_stream_aggregation, test_api_auth, test_ai]
     passed = failed = 0
     for t in tests:
         try:

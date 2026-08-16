@@ -23,6 +23,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import ai
+import alpaca_client
 import conditions
 import config
 import db
@@ -59,8 +60,9 @@ class _RuleFields(BaseModel):
     @classmethod
     def _symbol(cls, v):
         v = v.upper().strip()
-        # the symbol reaches an upstream URL path with our API key attached
-        if not massive_client.SYMBOL_RE.fullmatch(v):
+        # the symbol reaches an upstream URL path with our credentials attached,
+        # so validate against whichever provider is actually going to be called
+        if not engine.data_client().SYMBOL_RE.fullmatch(v):
             raise ValueError("symbol must be 1-10 characters of A-Z, '.' or '-'")
         return v
 
@@ -142,8 +144,15 @@ async def lifespan(app: FastAPI):
         engine.DEMO = True
         import threading
         threading.Thread(target=engine.run_demo, daemon=True).start()
+    elif config.DATA_PROVIDER == "alpaca" and alpaca_client.available():
+        # Resident process + websocket: alerts land seconds after a bar closes
+        # instead of up to a poll interval later. A function cannot do this —
+        # there is no process to hold the socket open.
+        import stream
+        logger.info("starting Alpaca stream engine (real-time %s)", config.ALPACA_FEED)
+        stream.start_thread()
     else:
-        engine.start_thread()
+        engine.start_thread()  # REST polling every REFRESH_SECONDS
     yield
 
 

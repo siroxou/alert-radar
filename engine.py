@@ -13,6 +13,7 @@ import time
 from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
+import alpaca_client
 import conditions
 import config
 import db
@@ -123,9 +124,15 @@ def now_et():
     return datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET")
 
 
+def data_client():
+    """The REST market-data client. Alpaca by default; Massive only on a paid tier
+    (its free plan is end-of-day, which evaluates yesterday's prices as if live)."""
+    return massive_client if config.DATA_PROVIDER == "massive" else alpaca_client
+
+
 def _fetch_series(symbol, timeframe):
     mult, span, _disp, lookback = config.TIMEFRAMES[timeframe]
-    return {"closes": massive_client.get_bars(symbol, mult, span, lookback)}
+    return {"closes": data_client().get_bars(symbol, mult, span, lookback)}
 
 
 def _provider(series_provider=None):

@@ -29,7 +29,23 @@ def _env_bool(name, default):
 # "resident loop writing files" to "cron-driven, all state in Postgres".
 SERVERLESS = bool(os.environ.get("VERCEL"))
 
-# --- Market data (Massive — formerly Polygon.io. api.polygon.io still resolves, but we use Massive.) ---
+# --- Market data ----------------------------------------------------------
+# Alpaca is the default. Massive's free tier is END-OF-DAY only, so during a live
+# session it hands back yesterday's closes — every rule would evaluate stale
+# prices and latch one meaningless alert. Alpaca free gives real-time IEX over
+# websocket plus REST history to ~15 minutes ago; together those are current.
+# Set DATA_PROVIDER=massive to go back (only worth it on a paid Massive tier).
+DATA_PROVIDER = os.environ.get("DATA_PROVIDER", "alpaca").strip().lower()
+
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
+ALPACA_API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
+ALPACA_FEED = os.environ.get("ALPACA_FEED", "iex")  # "iex" free; "sip" needs a paid plan
+ALPACA_STREAM_URL = os.environ.get(
+    "ALPACA_STREAM_URL", f"wss://stream.data.alpaca.markets/v2/{ALPACA_FEED}")
+# Free IEX websocket caps concurrent subscriptions. Signup is open, so friends
+# can add symbols without bound — this is the ceiling that keeps the stream alive.
+MAX_STREAM_SYMBOLS = int(os.environ.get("MAX_STREAM_SYMBOLS", 30))
+
 MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY", "")
 MASSIVE_BASE_URL = os.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
 DRY_RUN = _env_bool("DRY_RUN", True)
