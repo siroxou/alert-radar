@@ -33,7 +33,7 @@ SERVERLESS = bool(os.environ.get("VERCEL"))
 # Alpaca is the default. Massive's free tier is END-OF-DAY only, so during a live
 # session it hands back yesterday's closes — every rule would evaluate stale
 # prices and latch one meaningless alert. Alpaca free gives real-time IEX over
-# websocket plus REST history to ~15 minutes ago; together those are current.
+# BOTH REST and websocket — the 15-minute free-plan delay applies to SIP, not IEX.
 # Set DATA_PROVIDER=massive to go back (only worth it on a paid Massive tier).
 DATA_PROVIDER = os.environ.get("DATA_PROVIDER", "alpaca").strip().lower()
 

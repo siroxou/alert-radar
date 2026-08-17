@@ -1,5 +1,10 @@
 """Real-time bar stream from Alpaca (IEX) for the always-on deployment shape.
 
+OPTIONAL, and off by default: Alpaca's REST endpoint is itself real-time on IEX
+(~15s behind a bar close), so cron-driven polling already alerts inside a minute
+with no symbol ceiling. This buys ~5s instead, at the price of a resident host
+and Alpaca's 30-symbol free websocket cap. Only worth it if seconds matter.
+
 A serverless function cannot hold a websocket open, so this runs only under the
 resident process (Docker / systemd). It keeps an in-memory series cache and hands
 that cache to the engine as a `series_provider` — the seam the test suite and demo
@@ -89,8 +94,8 @@ def wanted_symbols(pairs):
 
 
 def backfill(pairs):
-    """REST-fill history for pairs we do not have yet. Free tier withholds the
-    last ~15 minutes; the stream covers exactly that gap."""
+    """REST-fill history for pairs we do not have yet — the stream only carries
+    bars from the moment you connect."""
     for symbol, tf in sorted(pairs):
         with _lock:
             if _SERIES.get((symbol, tf)):

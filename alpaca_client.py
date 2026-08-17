@@ -4,14 +4,11 @@ Replaces Massive, whose free tier serves END-OF-DAY data only — during a live
 session it returns bars through the previous close, so every rule would evaluate
 yesterday's prices and latch a meaningless alert.
 
-Alpaca's free tier splits the job in two, and this module handles the first half:
-
-  REST  (here)      history up to ~15 minutes ago. Free tier withholds the most
-                    recent 15 minutes, which is fine for backfill: RSI(14) on
-                    15-minute bars needs ~4 hours of history, not the last tick.
-  websocket (stream.py)  the live tail, real-time from IEX.
-
-Together they give a complete, current series for free. Neither half does on its own.
+Alpaca's free tier serves REAL-TIME IEX here, not delayed data — measured ~15
+SECONDS between a bar closing and this endpoint returning it. The widely-cited
+15-MINUTE delay on Alpaca's free plan applies to the SIP feed; IEX has none.
+That is why polling this on a ~1-minute cron is a complete solution on its own,
+and why stream.py (websocket, ~5s, but capped at 30 symbols) is optional.
 """
 import re
 from datetime import datetime, timedelta, timezone
@@ -61,9 +58,9 @@ def get_bars(symbol: str, multiplier: int, timespan: str, lookback_days: int) ->
     if not available():
         raise ValueError("ALPACA_API_KEY / ALPACA_API_SECRET are not set")
 
-    # end is left unset on purpose: the free feed already withholds the last 15
-    # minutes, and naming an end inside that window returns an error rather than
-    # a short series.
+    # end is left unset on purpose: unbounded means "through the newest bar",
+    # which on IEX is the bar that closed seconds ago. Naming an end would only
+    # ever cut the series short of live.
     start = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     params = {
         "timeframe": tf,
