@@ -355,6 +355,12 @@ def meta(user: dict = Depends(me)):
         "auth_enabled": bool(config.SUPABASE_URL or config.AUTH_TOKEN),
         "user": user.get("email") or "",
         "max_rules": config.MAX_RULES_PER_USER,
+        # Served rather than hardcoded in the UI: the Settings panel named the
+        # wrong provider for two releases because it restated a server fact the
+        # client had no way to read.
+        "data_provider": config.DATA_PROVIDER,
+        "data_feed": config.ALPACA_FEED if config.DATA_PROVIDER == "alpaca" else "",
+        "serverless": config.SERVERLESS,
     }
 
 

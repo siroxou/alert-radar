@@ -2,343 +2,528 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
 <title>Alert Radar</title>
+<script>
+  /* Theme must resolve before first paint or the page flashes the wrong ground.
+     Only an EXPLICIT choice is stored; absence means "follow the system". */
+  try {
+    var _t = localStorage.getItem('ar_theme');
+    if (_t === 'light' || _t === 'dark') document.documentElement.dataset.theme = _t;
+  } catch (e) {}
+</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <script>
   tailwind.config = { theme: { extend: { fontFamily: {
-    sans: ['Nunito', 'system-ui', 'sans-serif'],
+    sans: ['system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
     mono: ['JetBrains Mono', 'ui-monospace', 'monospace'] } } } };
 </script>
 <style>
-  :root {
-    --ink: #2D2A45;         /* primary text  ~13:1 on surface */
-    --ink2: #67628A;        /* secondary text ~5:1 on surface */
-    --surface: #FBFAFF;
-    --surface2: #F0EDFB;
-    --violet: #6C5AF2; --violet-deep: #5646E5; --violet-soft: #E9E4FE;
-    --mint: #0E8A66;   --mint-soft: #D5F5E8;
-    --coral: #D63B5B;  --coral-soft: #FFE1E4;
-    --amber: #8A5A00;  --amber-soft: #FFEFCF;
-    --sky: #0F5E8C;    --sky-soft: #DCF0FF;
+/* ============================================================
+   TOKENS — dark is the default; light is a peer, not an override.
+   An explicit [data-theme] wins in BOTH directions (Law 7).
+   ============================================================ */
+:root {
+  --bg:        #0c0d0f;
+  --bg-tint:   #16181d;   /* the faint ground wash the chrome blurs */
+  --surface:   #16181c;   /* cards — solid, never translucent */
+  --surface-2: #1e2127;   /* inset fields, wells */
+  --surface-3: #262a31;   /* hover */
+  --chrome:    rgba(18, 20, 24, .68);   /* translucent floating chrome */
+  --chrome-hi: rgba(255, 255, 255, .07); /* bright edge = light catching material */
+  --line:      rgba(255, 255, 255, .09);
+  --line-2:    rgba(255, 255, 255, .16);
+  --text:      #e9ecf0;
+  --text-2:    #99a0aa;
+  --text-3:    #878e99;   /* 5.4:1 on --surface; #6d747e measured only 3.8:1 */
+  --accent:      #f2a71b;
+  --accent-2:    #ffc255;
+  --accent-ink:  #131519;              /* text ON accent */
+  --accent-soft: rgba(242, 167, 27, .15);
+  --sig-low:      #f4565c;             /* oversold / triggered */
+  --sig-low-soft: rgba(244, 86, 92, .14);
+  --sig-high:      #2fc07d;            /* overbought */
+  --sig-high-soft: rgba(47, 192, 125, .14);
+  --scrim: rgba(0, 0, 0, .58);
+  --shadow-card:  0 1px 2px rgba(0,0,0,.4);
+  --shadow-float: 0 24px 60px -12px rgba(0,0,0,.7), 0 4px 12px rgba(0,0,0,.35);
+  --r-card: 12px; --r-ctl: 8px; --r-sheet: 16px;
+  --blur: 20px;
+  --sym-s: 42%; --sym-l: 74%;          /* per-symbol hue, desaturated hard */
+  --sym-bg-a: .13;
+}
+:root[data-theme="light"] {
+  --bg: #f4f5f6; --bg-tint: #e9ebee;
+  --surface: #ffffff; --surface-2: #f1f3f5; --surface-3: #e7eaee;
+  --chrome: rgba(252, 253, 254, .72); --chrome-hi: rgba(255,255,255,.9);
+  --line: rgba(16, 20, 26, .10); --line-2: rgba(16, 20, 26, .20);
+  --text: #14171b; --text-2: #5c646e; --text-3: #686f79;
+  --accent: #a56800; --accent-2: #8a5600; --accent-ink: #ffffff;
+  --accent-soft: rgba(165, 104, 0, .12);
+  --sig-low: #c3243c; --sig-low-soft: rgba(195, 36, 60, .10);
+  --sig-high: #0d7a4e; --sig-high-soft: rgba(13, 122, 78, .10);
+  --scrim: rgba(20, 23, 28, .34);
+  --shadow-card: 0 1px 2px rgba(16,20,26,.07), 0 0 0 1px rgba(16,20,26,.04);
+  --shadow-float: 0 24px 60px -12px rgba(16,20,26,.22), 0 4px 12px rgba(16,20,26,.08);
+  --sym-s: 34%; --sym-l: 34%; --sym-bg-a: .10;
+}
+@media (prefers-color-scheme: light) {
+  /* System default — yields to an explicit dark choice. */
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f5f6; --bg-tint: #e9ebee;
+    --surface: #ffffff; --surface-2: #f1f3f5; --surface-3: #e7eaee;
+    --chrome: rgba(252, 253, 254, .72); --chrome-hi: rgba(255,255,255,.9);
+    --line: rgba(16, 20, 26, .10); --line-2: rgba(16, 20, 26, .20);
+    --text: #14171b; --text-2: #5c646e; --text-3: #686f79;
+    --accent: #a56800; --accent-2: #8a5600; --accent-ink: #ffffff;
+    --accent-soft: rgba(165, 104, 0, .12);
+    --sig-low: #c3243c; --sig-low-soft: rgba(195, 36, 60, .10);
+    --sig-high: #0d7a4e; --sig-high-soft: rgba(13, 122, 78, .10);
+    --scrim: rgba(20, 23, 28, .34);
+    --shadow-card: 0 1px 2px rgba(16,20,26,.07), 0 0 0 1px rgba(16,20,26,.04);
+    --shadow-float: 0 24px 60px -12px rgba(16,20,26,.22), 0 4px 12px rgba(16,20,26,.08);
+    --sym-s: 34%; --sym-l: 34%; --sym-bg-a: .10;
   }
-  * { -webkit-tap-highlight-color: transparent; }
-  [hidden] { display: none !important; }
-  body {
-    font-family: 'Nunito', system-ui, sans-serif;
-    color: var(--ink);
-    background: linear-gradient(155deg, #F2EDFC 0%, #FDF5EE 52%, #EDF7F2 100%);
-    background-attachment: fixed;
-  }
-  /* ---- clay surfaces ---- */
-  .clay {
-    background: linear-gradient(150deg, #FEFDFF, #F6F3FE);
-    border-radius: 28px;
-    box-shadow:
-      0 14px 30px -12px rgba(97, 80, 235, .22),
-      0 3px 8px rgba(97, 80, 235, .06),
-      inset 0 -8px 16px rgba(124, 108, 246, .08),
-      inset 0 6px 12px rgba(255, 255, 255, .95);
-  }
-  .clay-sm {
-    background: linear-gradient(150deg, #FEFDFF, #F7F4FE);
-    border-radius: 20px;
-    box-shadow:
-      0 8px 18px -8px rgba(97, 80, 235, .18),
-      inset 0 -5px 10px rgba(124, 108, 246, .07),
-      inset 0 4px 8px rgba(255, 255, 255, .9);
-  }
-  .card-fired {
-    background: linear-gradient(150deg, #FFF9F9, #FFE9EC);
-    box-shadow:
-      0 14px 30px -12px rgba(214, 59, 91, .32),
-      inset 0 -8px 16px rgba(214, 59, 91, .08),
-      inset 0 6px 12px rgba(255, 255, 255, .9);
-  }
-  .clay-inset, .field {
-    background: #F1EDFB;
-    border-radius: 18px;
-    border: none;
-    box-shadow: inset 0 4px 10px rgba(97, 80, 235, .13), inset 0 -3px 8px rgba(255, 255, 255, .85);
-  }
-  .field { width: 100%; padding: .75rem 1rem; font-weight: 700; font-size: .925rem; color: var(--ink); }
-  .field::placeholder { color: #9A94BE; font-weight: 600; }
-  /* ---- buttons ---- */
-  .btn-primary {
-    display: inline-flex; align-items: center; gap: .5rem;
-    background: linear-gradient(160deg, #8B7CF8, #6650F0);
-    color: #fff; border-radius: 20px; padding: .78rem 1.35rem; font-weight: 800; font-size: .95rem;
-    box-shadow: 0 10px 22px -8px rgba(102, 80, 240, .6), inset 0 3px 6px rgba(255,255,255,.35), inset 0 -4px 8px rgba(0,0,0,.14);
-    transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
-  }
-  .btn-primary:hover { filter: brightness(1.06); }
-  .btn-primary:active { transform: translateY(2px) scale(.98); box-shadow: 0 4px 10px -4px rgba(102,80,240,.5), inset 0 3px 6px rgba(0,0,0,.15); }
-  .btn-soft {
-    display: inline-flex; align-items: center; gap: .5rem;
-    background: var(--violet-soft); color: var(--violet-deep);
-    border-radius: 18px; padding: .65rem 1.1rem; font-weight: 800; font-size: .9rem;
-    box-shadow: inset 0 -3px 6px rgba(97,80,235,.12), inset 0 2px 5px rgba(255,255,255,.9), 0 4px 10px -4px rgba(97,80,235,.25);
-    transition: transform .15s ease, filter .15s ease;
-  }
-  .btn-soft:active { transform: translateY(1px) scale(.98); }
-  .icon-btn {
-    width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center;
-    border-radius: 16px; color: var(--ink2); background: transparent;
-    transition: background .15s ease, color .15s ease, transform .1s ease;
-  }
-  .icon-btn:hover { background: var(--surface2); color: var(--violet-deep); }
-  .icon-btn:active { transform: scale(.94); }
-  .icon-btn.danger:hover { background: var(--coral-soft); color: var(--coral); }
-  /* ---- chips ---- */
-  .chip { display: inline-flex; align-items: center; gap: .35rem; border-radius: 999px; padding: .28rem .7rem; font-size: .72rem; font-weight: 800; letter-spacing: .02em; }
-  .chip .dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
-  .chip-mint  { background: var(--mint-soft);  color: var(--mint); }
-  .chip-coral { background: var(--coral-soft); color: var(--coral); }
-  .chip-amber { background: var(--amber-soft); color: var(--amber); }
-  .chip-sky   { background: var(--sky-soft);   color: var(--sky); }
-  .chip-violet{ background: var(--violet-soft);color: var(--violet-deep); }
-  .chip-gray  { background: #ECEAF4; color: var(--ink2); }
-  /* ---- nav ---- */
-  .nav-item {
-    display: flex; align-items: center; gap: .75rem; padding: .72rem 1rem; border-radius: 18px;
-    font-weight: 800; font-size: .95rem; color: var(--ink2); transition: background .15s, color .15s;
-  }
-  .nav-item:hover { background: rgba(124, 108, 246, .09); color: var(--ink); }
-  .nav-item.active { color: var(--violet-deep); background: var(--violet-soft);
-    box-shadow: inset 0 3px 8px rgba(97, 80, 235, .16), inset 0 -2px 6px rgba(255, 255, 255, .9); }
-  .bnav-item { flex: 1; display: flex; flex-direction: column; align-items: center; gap: .18rem;
-    padding: .5rem .25rem .45rem; border-radius: 18px; font-size: 11px; font-weight: 800; color: var(--ink2); min-height: 44px; }
-  .bnav-item.active { color: var(--violet-deep); background: var(--violet-soft);
-    box-shadow: inset 0 3px 8px rgba(97, 80, 235, .16), inset 0 -2px 6px rgba(255,255,255,.9); }
-  /* ---- toggle switch ---- */
-  .switch { display: inline-flex; align-items: center; gap: .6rem; cursor: pointer; }
-  .switch .track { width: 52px; height: 30px; border-radius: 999px; background: #E4E0F2; position: relative; transition: background .2s;
-    box-shadow: inset 0 3px 6px rgba(97,80,235,.18), inset 0 -2px 4px rgba(255,255,255,.8); }
-  .switch .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 999px;
-    background: linear-gradient(160deg,#FFFFFF,#F0EDFB); box-shadow: 0 3px 6px rgba(45,42,69,.25); transition: transform .2s ease; }
-  .switch input:checked + .track { background: linear-gradient(160deg,#8B7CF8,#6650F0); }
-  .switch input:checked + .track::after { transform: translateX(22px); }
-  /* ---- channel toggle chips ---- */
-  .chip-toggle { display: inline-flex; align-items: center; gap: .4rem; border-radius: 16px; padding: .55rem .9rem;
-    font-weight: 800; font-size: .82rem; cursor: pointer; color: var(--ink2); background: #F1EDFB;
-    box-shadow: inset 0 3px 7px rgba(97,80,235,.12), inset 0 -2px 5px rgba(255,255,255,.85); transition: all .15s ease; }
-  .chip-toggle.on { color: #fff; background: linear-gradient(160deg,#8B7CF8,#6650F0);
-    box-shadow: 0 6px 14px -6px rgba(102,80,240,.55), inset 0 2px 4px rgba(255,255,255,.3), inset 0 -3px 6px rgba(0,0,0,.12); }
-  .chip-toggle.is-disabled { opacity: .55; cursor: not-allowed; }
-  /* ---- charts ---- */
-  .bar-track { height: 16px; border-radius: 999px; background: var(--surface2);
-    box-shadow: inset 0 2px 5px rgba(97,80,235,.12); overflow: hidden; }
-  .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #8B7CF8, #6C5AF2); min-width: 6px;
-    box-shadow: inset 0 2px 3px rgba(255,255,255,.35), inset 0 -2px 4px rgba(0,0,0,.12); transition: width .4s ease; }
-  .hour-col { flex: 1 1 0%; border-radius: 6px 6px 3px 3px; background: linear-gradient(180deg, #8B7CF8, #6C5AF2); min-height: 3px;
-    box-shadow: inset 0 2px 3px rgba(255,255,255,.3); }
-  .hour-col.zero { background: #E7E3F5; box-shadow: none; }
-  /* ---- misc ---- */
-  :focus-visible { outline: 3px solid rgba(108, 90, 242, .55); outline-offset: 2px; border-radius: 12px; }
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-thumb { background: rgba(108, 90, 242, .25); border-radius: 8px; }
-  @keyframes pop-in { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
-  .enter { animation: pop-in .3s cubic-bezier(.16, 1, .3, 1); }
-  @keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  .live-dot { animation: pulse-soft 1.8s ease-in-out infinite; }
-  .page-title { font-size: 1.75rem; font-weight: 900; letter-spacing: -.01em; }
-  .section-title { font-size: 1.05rem; font-weight: 900; }
-  .sub { color: var(--ink2); font-weight: 600; font-size: .875rem; }
-  .skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; }
-  .skip-link:focus { left: 12px; top: 12px; background: #fff; padding: .6rem 1rem; border-radius: 14px; font-weight: 800; }
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation: none !important; transition: none !important; }
-  }
+}
+
+/* ============================================================
+   BASE + TYPOGRAPHY
+   Tracking is size-specific. Leading tracks size inversely.
+   Everything in rem so the user's text-size setting scales layout.
+   ============================================================ */
+* { -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+html { font: 100%/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  /* A faint ground wash so translucent chrome has something to blur. */
+  background-image:
+    radial-gradient(1100px 620px at 12% -8%, var(--bg-tint), transparent 62%),
+    radial-gradient(900px 520px at 105% 4%, var(--bg-tint), transparent 58%);
+  background-attachment: fixed;
+  overflow-wrap: anywhere;
+}
+.display   { font-size: clamp(1.5rem, 1.2rem + 1.1vw, 1.9rem); line-height: 1.1;  letter-spacing: -.022em; font-weight: 680; }
+.title     { font-size: 1rem;    line-height: 1.3;  letter-spacing: -.012em; font-weight: 640; }
+.label     { font-size: .69rem;  line-height: 1.4;  letter-spacing: .07em; font-weight: 620; text-transform: uppercase; color: var(--text-3); }
+.sub       { font-size: .8125rem; line-height: 1.55; letter-spacing: 0; color: var(--text-2); }
+.num       { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; letter-spacing: -.02em; }
+.mono      { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+/* ============================================================
+   MATERIALS
+   Cards are SOLID. Only floating chrome is translucent, and a
+   translucent layer never sits on another translucent layer.
+   ============================================================ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card);
+}
+.well { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-ctl); }
+.chrome {
+  background: var(--chrome);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(180%);
+  backdrop-filter: blur(var(--blur)) saturate(180%);
+}
+.chrome-float {  /* bigger surface reads as thicker material */
+  background: var(--chrome);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid var(--chrome-hi);
+  box-shadow: var(--shadow-float);
+}
+/* Text over blur: heavier weight + a touch of tracking keeps it legible. */
+.chrome .title, .chrome-float .title, .vibrant { font-weight: 660; letter-spacing: -.005em; }
+
+/* ============================================================
+   CONTROLS — press response is applied on pointerdown, in JS.
+   ============================================================ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+  border-radius: var(--r-ctl); padding: .5rem .85rem;
+  font-size: .8125rem; font-weight: 600; letter-spacing: -.005em;
+  min-height: 36px; white-space: nowrap;
+}
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { background: var(--accent-2); }
+.btn-quiet { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+.btn-quiet:hover { background: var(--surface-3); }
+.btn-ghost { color: var(--text-2); }
+.btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn {
+  width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-ctl); color: var(--text-2); flex: none;
+}
+.icon-btn:hover { background: var(--surface-3); color: var(--text); }
+.icon-btn.danger:hover { background: var(--sig-low-soft); color: var(--sig-low); }
+/* ~10px of invisible hit padding on small controls, per the gesture checklist. */
+.icon-btn::after { content: ""; position: absolute; inset: -5px; }
+.icon-btn { position: relative; }
+@media (pointer: coarse) { .icon-btn { width: 44px; height: 44px; } .btn { min-height: 44px; } }
+
+.is-pressed { transform: scale(.97); }
+.row-face.is-pressed { transform: none; background: var(--surface-3); }
+
+.field {
+  width: 100%; padding: .5rem .65rem; font-size: .8125rem; font-weight: 500;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--r-ctl); min-height: 36px;
+}
+.field::placeholder { color: var(--text-3); }
+.field:hover { border-color: var(--line-2); }
+select.field { appearance: none; padding-right: 1.75rem;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right .95rem center, right .65rem center; background-size: 5px 5px; background-repeat: no-repeat; }
+@media (pointer: coarse) { .field { min-height: 44px; font-size: 1rem; } }
+
+.chip {
+  display: inline-flex; align-items: center; gap: .3rem; border-radius: 999px;
+  padding: .15rem .5rem; font-size: .6875rem; font-weight: 600; letter-spacing: .01em;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.chip .dot { width: 5px; height: 5px; border-radius: 999px; background: currentColor; flex: none; }
+.chip-neutral { background: var(--surface-2); color: var(--text-2); border-color: var(--line); }
+.chip-accent  { background: var(--accent-soft); color: var(--accent); }
+.chip-low     { background: var(--sig-low-soft);  color: var(--sig-low); }
+.chip-high    { background: var(--sig-high-soft); color: var(--sig-high); }
+
+.seg { display: inline-flex; padding: 2px; gap: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-ctl); }
+.seg > button { padding: .3rem .7rem; border-radius: 6px; font-size: .75rem; font-weight: 600; color: var(--text-2); min-height: 30px; }
+.seg > button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); }
+
+.switch { display: inline-flex; align-items: center; gap: .6rem; cursor: pointer; }
+.switch .track { width: 40px; height: 24px; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line); position: relative; flex: none; }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 999px; background: var(--text-2); }
+.switch input:checked + .track { background: var(--accent); border-color: transparent; }
+.switch input:checked + .track::after { transform: translateX(16px); background: var(--accent-ink); }
+
+/* ============================================================
+   LAYOUT — one custom property per axis so an explicit choice
+   always outranks the responsive default (Law 7 / fm-5).
+   ============================================================ */
+@property --col-nav { syntax: '<length>'; inherits: true; initial-value: 248px; }
+.shell { --col-nav: 248px; }
+.shell.nav-hidden { --col-nav: 0px; }                                   /* explicit hide wins */
+@media (max-width: 1180px) { .shell:not(.nav-shown) { --col-nav: 0px; } } /* auto-fold is only a DEFAULT */
+@media (max-width: 1023px) { .shell.shell { --col-nav: 0px; } }           /* hard floor: mobile has a tab bar */
+
+.rail {
+  position: fixed; inset: 0 auto 0 0; z-index: 30;
+  width: var(--col-nav); overflow: hidden; white-space: nowrap;
+  /* box-shadow, not border-right: a border would keep the collapsed rail 1px wide,
+     which both shows a hairline artifact and makes "is it open?" ambiguous. */
+  box-shadow: 1px 0 0 var(--line);
+  transition: --col-nav .34s cubic-bezier(.32, .72, 0, 1);
+}
+.shell-main { padding-left: var(--col-nav); transition: --col-nav .34s cubic-bezier(.32, .72, 0, 1); min-width: 0; }
+.rail-inner { width: 248px; height: 100%; display: flex; flex-direction: column; gap: 1.25rem; padding: 1rem .75rem; overflow-y: auto; }
+
+.nav-item {
+  display: flex; align-items: center; gap: .6rem; padding: .45rem .6rem; border-radius: var(--r-ctl);
+  font-size: .8125rem; font-weight: 550; color: var(--text-2); min-height: 34px;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--text); }
+.nav-item.active { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.tabbar {
+  position: fixed; z-index: 40; bottom: max(.5rem, env(safe-area-inset-bottom)); left: .5rem; right: .5rem;
+  display: flex; gap: 2px; padding: 4px; border-radius: 14px;
+}
+.tab-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  padding: .3rem; border-radius: 10px; font-size: 10px; font-weight: 600; color: var(--text-2); min-height: 46px; }
+.tab-item.active { background: var(--surface-2); color: var(--text); }
+
+.topbar { position: sticky; top: 0; z-index: 25; border-bottom: 1px solid var(--line); }
+
+/* ============================================================
+   RULE ROWS — one DOM, two presentations.
+   Desktop: actions sit inline, revealed on hover/focus.
+   Mobile:  actions sit behind the face, revealed by swipe.
+   ============================================================ */
+.row { position: relative; display: flex; align-items: stretch; overflow: hidden;
+  border-bottom: 1px solid var(--line); background: var(--surface); }
+.row:first-child { border-top-left-radius: var(--r-card); border-top-right-radius: var(--r-card); }
+.row:last-child { border-bottom: 0; border-bottom-left-radius: var(--r-card); border-bottom-right-radius: var(--r-card); }
+.row-face {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: .7rem;
+  padding: .6rem .75rem; text-align: left; background: var(--surface);
+  will-change: transform;
+}
+.row-face:hover { background: var(--surface-2); }
+.row.fired .row-face { box-shadow: inset 2px 0 0 var(--sig-low); }
+.row.paused .row-face { opacity: .5; }
+.row-actions { display: flex; align-items: center; gap: 2px; padding-right: .4rem; background: var(--surface-2); flex: none; }
+.sym { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .68rem; font-weight: 600; letter-spacing: .02em;
+  width: 46px; flex: none; text-align: center; padding: .2rem 0; border-radius: 5px; }
+.row-name { font-size: .8125rem; font-weight: 570; letter-spacing: -.005em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-meta { font-size: .6875rem; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-val { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums;
+  font-size: 1rem; font-weight: 500; letter-spacing: -.03em; text-align: right; width: 5.5ch; flex: none; }
+.row.fired .row-val { color: var(--sig-low); }
+
+@media (min-width: 768px) {
+  /* Actions occupy reserved width so the number column never shifts. */
+  .row-actions { opacity: 0; }
+  .row:hover .row-actions, .row:focus-within .row-actions { opacity: 1; }
+}
+@media (max-width: 767px) {
+  .row-actions { position: absolute; inset: 0 0 0 auto; padding: 0 .4rem; }
+  .row-face { position: relative; z-index: 1; }
+}
+
+/* stat strip */
+.stat { padding: .7rem .85rem; }
+.stat-n { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums;
+  font-size: 1.35rem; font-weight: 500; letter-spacing: -.035em; line-height: 1.1; }
+
+/* charts */
+.bar-track { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; background: var(--accent); min-width: 3px; }
+.hour-col { flex: 1 1 0%; border-radius: 2px; background: var(--accent); min-height: 2px; }
+.hour-col.zero { background: var(--surface-3); }
+
+/* ============================================================
+   SHEET + SCRIM — anchored, materialized, drag-driven.
+   Transforms are written by springs, never by CSS transitions.
+   ============================================================ */
+.scrim { position: fixed; inset: 0; z-index: 90; background: var(--scrim); opacity: 0; }
+.sheet { position: fixed; z-index: 100; will-change: transform, opacity; }
+@media (max-width: 767px) {
+  /* The material extends 90px BELOW the viewport so an over-drag can rubber-band
+     upward without tearing a gap open under the sheet. Without this the only way
+     to hide the gap is to clamp the drag — which is the hard stop we must not ship. */
+  .sheet { inset: auto 0 -90px 0; max-height: calc(92dvh + 90px);
+    border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+    padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
+  .grabber { display: block; width: 34px; height: 4px; border-radius: 999px; background: var(--line-2); margin: .5rem auto .1rem; }
+}
+@media (min-width: 768px) {
+  .sheet { inset: 50% auto auto 50%; translate: -50% -50%; width: min(560px, calc(100vw - 2rem));
+    max-height: 88dvh; border-radius: var(--r-card); }
+  .grabber { display: none; }
+}
+.sheet-scroll { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+#toast { position: fixed; z-index: 120; left: 50%; translate: -50% 0; bottom: 5.5rem; opacity: 0; pointer-events: none; }
+@media (min-width: 1024px) { #toast { bottom: 1.5rem; } }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+.skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; }
+.skip-link:focus { left: 12px; top: 12px; background: var(--surface); padding: .5rem .85rem; border-radius: var(--r-ctl); border: 1px solid var(--line-2); }
+
+/* ============================================================
+   THE THREE reduced-* SIGNALS, handled INDEPENDENTLY.
+   Reduced motion means a non-vestibular equivalent, not no feedback.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .rail, .shell-main { transition: none; }
+  .is-pressed { transform: none; background: var(--surface-3); }  /* feedback survives, travel does not */
+  html { scroll-behavior: auto; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .chrome, .chrome-float { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  :root { --line: rgba(255,255,255,.34); --line-2: rgba(255,255,255,.5); --text-2: #c8ced6; --text-3: #aab1ba; }
+  :root[data-theme="light"] { --line: rgba(16,20,26,.34); --line-2: rgba(16,20,26,.5); --text-2: #333a42; --text-3: #454c55; }
+  .chrome, .chrome-float { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .card, .field, .row { border-color: var(--line-2); }
+}
 </style>
 </head>
 <body class="min-h-dvh antialiased">
 <a href="#main" class="skip-link">Skip to content</a>
 
-<div class="lg:grid lg:grid-cols-[264px_1fr] max-w-[1500px] mx-auto">
-  <!-- ============ SIDEBAR (desktop) ============ -->
-  <aside class="hidden lg:flex flex-col gap-6 p-6 sticky top-0 h-dvh overflow-y-auto">
-    <a href="#/dashboard" class="flex items-center gap-3 px-1" aria-label="Alert Radar home">
-      <span class="w-11 h-11 rounded-2xl flex items-center justify-center text-white"
-            style="background:linear-gradient(160deg,#8B7CF8,#6650F0);box-shadow:0 8px 18px -6px rgba(102,80,240,.55), inset 0 3px 6px rgba(255,255,255,.35), inset 0 -4px 8px rgba(0,0,0,.15)"
-            id="brand-mark"></span>
-      <span class="text-xl font-black tracking-tight">Alert Radar</span>
-    </a>
-    <nav id="side-nav" class="flex flex-col gap-5" aria-label="Primary"></nav>
-    <div class="mt-auto clay-sm p-4 text-xs font-bold" style="color:var(--ink2)">
-      <div class="flex items-center gap-2 mb-1" id="side-docs"></div>
-      <div class="flex items-center gap-2 mb-1" id="side-github"></div>
-      <p class="font-semibold">v2 · rules engine + email delivery</p>
+<div class="shell" id="shell">
+  <!-- ============ RAIL (desktop) ============ -->
+  <aside class="rail chrome" id="rail" aria-label="Sidebar">
+    <div class="rail-inner">
+      <a href="#/dashboard" class="flex items-center gap-2.5 px-1.5 py-1" aria-label="Alert Radar home">
+        <span class="w-7 h-7 rounded-lg flex items-center justify-center flex-none"
+              style="background:var(--accent);color:var(--accent-ink)" id="brand-mark"></span>
+        <span class="title">Alert Radar</span>
+      </a>
+      <nav id="side-nav" class="flex flex-col gap-4" aria-label="Primary"></nav>
+      <div class="mt-auto pt-3" style="border-top:1px solid var(--line)">
+        <div class="flex items-center gap-2 px-1.5 py-1 sub" id="side-docs"></div>
+        <div class="flex items-center gap-2 px-1.5 py-1 sub" id="side-github"></div>
+        <p class="px-1.5 pt-1 label">v1.1.0 · rules + email</p>
+      </div>
     </div>
   </aside>
 
-  <!-- ============ MAIN COLUMN ============ -->
-  <div class="min-w-0">
-    <header class="flex items-center gap-3 px-4 lg:px-8 pt-5 pb-2">
+  <!-- ============ MAIN ============ -->
+  <div class="shell-main">
+    <header class="topbar chrome flex items-center gap-2 px-3 lg:px-5 py-2.5">
+      <button id="nav-toggle" class="icon-btn hidden lg:inline-flex" aria-label="Toggle sidebar" aria-pressed="true"></button>
       <a href="#/dashboard" class="lg:hidden flex items-center gap-2" aria-label="Alert Radar home">
-        <span class="w-9 h-9 rounded-xl flex items-center justify-center text-white"
-              style="background:linear-gradient(160deg,#8B7CF8,#6650F0);box-shadow:0 6px 14px -5px rgba(102,80,240,.5)"
-              id="brand-mark-m"></span>
-        <span class="text-lg font-black tracking-tight">Alert Radar</span>
+        <span class="w-7 h-7 rounded-lg flex items-center justify-center flex-none"
+              style="background:var(--accent);color:var(--accent-ink)" id="brand-mark-m"></span>
+        <!-- wordmark yields below sm: at 375px the chips + actions overflow and it wraps to two lines -->
+        <span class="title whitespace-nowrap hidden sm:inline">Alert Radar</span>
       </a>
       <div class="flex-1"></div>
-      <div id="dry-chip" class="chip chip-amber" hidden><span class="dot"></span><span class="hidden sm:inline">Dry run — logging only</span><span class="sm:hidden">Dry run</span></div>
-      <div id="health-chip" class="chip chip-coral" hidden><span class="dot live-dot"></span><span class="hidden sm:inline">Monitor stalled</span><span class="sm:hidden">Down</span></div>
-      <div id="market-pill" class="chip chip-gray"><span id="market-dot" class="dot live-dot"></span><span id="market-text">Connecting…</span></div>
-      <button id="new-btn" class="btn-primary" aria-label="Create new alert"><span id="new-btn-icon"></span><span class="hidden sm:inline">New Alert</span></button>
+      <div id="dry-chip" class="chip chip-accent" hidden><span class="dot"></span><span>Dry run</span></div>
+      <div id="health-chip" class="chip chip-low" hidden><span class="dot"></span><span class="hidden sm:inline">Monitor stalled</span><span class="sm:hidden">Down</span></div>
+      <div id="market-pill" class="chip chip-neutral"><span id="market-dot" class="dot"></span><span id="market-text">Connecting…</span></div>
+      <button id="theme-btn" class="icon-btn" aria-label="Switch theme"></button>
+      <button id="new-btn" class="btn btn-primary" aria-label="Create new alert"><span id="new-btn-icon"></span><span class="hidden sm:inline">New Alert</span></button>
     </header>
 
-    <main id="main" tabindex="-1" class="px-4 lg:px-8 pb-32 lg:pb-12 outline-none">
+    <main id="main" tabindex="-1" class="px-3 lg:px-5 pt-4 pb-28 lg:pb-10 outline-none max-w-[1400px]">
 
       <!-- ============ DASHBOARD ============ -->
       <section id="page-dashboard">
-        <div class="mt-4 mb-5">
-          <h1 class="page-title">Dashboard</h1>
+        <div class="mb-4">
+          <h1 class="display">Dashboard</h1>
           <p class="sub">Live view of your alert rules and recent activity.</p>
         </div>
-        <div id="tiles" class="grid grid-cols-2 xl:grid-cols-4 gap-4"></div>
-        <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-6 items-start">
-          <div class="xl:col-span-2">
-            <div class="flex items-center justify-between mb-3">
-              <h2 class="section-title">Live rules</h2>
-              <a href="#/alerts" class="text-sm font-800 font-extrabold" style="color:var(--violet-deep)">Manage all →</a>
+        <div id="tiles" class="card grid grid-cols-2 lg:grid-cols-5 divide-y lg:divide-y-0 divide-x" style="border-color:var(--line)"></div>
+        <div class="grid grid-cols-1 xl:grid-cols-[1fr_340px] gap-4 mt-4 items-start">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="title">Live rules</h2>
+              <a href="#/alerts" class="btn btn-ghost">Manage all</a>
             </div>
-            <div id="dash-rules" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
+            <div id="dash-rules" class="card overflow-hidden"></div>
           </div>
-          <div class="clay p-5">
+          <div class="card p-4">
             <div class="flex items-center justify-between mb-3">
-              <h2 class="section-title">Recent alerts</h2>
-              <span id="feed-count" class="chip chip-violet">0</span>
+              <h2 class="title">Recent alerts</h2>
+              <span id="feed-count" class="chip chip-neutral num">0</span>
             </div>
-            <ul id="dash-feed" class="flex flex-col gap-2.5"></ul>
-            <a href="#/history" class="inline-block mt-4 text-sm font-extrabold" style="color:var(--violet-deep)">View full history →</a>
+            <ul id="dash-feed" class="flex flex-col gap-1.5"></ul>
+            <a href="#/history" class="btn btn-ghost mt-3 -ml-2">View full history</a>
           </div>
         </div>
       </section>
 
       <!-- ============ ALERTS ============ -->
       <section id="page-alerts" hidden>
-        <div class="mt-4 mb-5">
-          <h1 class="page-title">Alerts</h1>
+        <div class="mb-4">
+          <h1 class="display">Alerts</h1>
           <p class="sub">Create, edit, pause, and delete your alert rules.</p>
         </div>
-        <div class="flex flex-col sm:flex-row gap-3 mb-5">
+        <div class="flex flex-col sm:flex-row gap-2 mb-3">
           <div class="relative flex-1">
-            <span class="absolute left-4 top-1/2 -translate-y-1/2" style="color:var(--ink2)" id="search-icon"></span>
-            <input id="rule-search" class="field pl-11" placeholder="Search by name or symbol…" aria-label="Search rules" />
+            <span class="absolute left-2.5 top-1/2 -translate-y-1/2" style="color:var(--text-3)" id="search-icon"></span>
+            <input id="rule-search" class="field pl-8" placeholder="Search by name or symbol…" aria-label="Search rules" />
           </div>
-          <select id="rule-type-filter" class="field sm:w-48" aria-label="Filter by condition type"><option value="">All conditions</option></select>
+          <select id="rule-type-filter" class="field sm:w-52" aria-label="Filter by condition type"><option value="">All conditions</option></select>
         </div>
-        <div id="alerts-grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4"></div>
-        <div id="alerts-empty" hidden class="clay p-10 text-center mt-2">
-          <div class="mx-auto w-16 h-16 rounded-3xl flex items-center justify-center mb-4" style="background:var(--violet-soft);color:var(--violet-deep)" id="alerts-empty-icon"></div>
-          <p class="font-extrabold text-lg">No alerts here</p>
-          <p class="sub mt-1 mb-5">Create your first rule — RSI, price, % change, or MA cross.</p>
-          <button class="btn-primary mx-auto" onclick="openModal()">Create an alert</button>
+        <div id="alerts-grid" class="card overflow-hidden"></div>
+        <div id="alerts-empty" hidden class="card p-10 text-center">
+          <div class="mx-auto w-11 h-11 rounded-xl flex items-center justify-center mb-3" style="background:var(--surface-2);color:var(--text-2)" id="alerts-empty-icon"></div>
+          <p class="title">No alerts here</p>
+          <p class="sub mt-1 mb-4">Create your first rule — RSI, price, % change, or MA cross.</p>
+          <button class="btn btn-primary mx-auto" onclick="openSheet()">Create an alert</button>
         </div>
       </section>
 
       <!-- ============ HISTORY ============ -->
       <section id="page-history" hidden>
-        <div class="mt-4 mb-5">
-          <h1 class="page-title">History</h1>
+        <div class="mb-4">
+          <h1 class="display">History</h1>
           <p class="sub">Every alert that fired, newest first (last 50 shown).</p>
         </div>
-        <div class="mb-5 max-w-md relative">
-          <span class="absolute left-4 top-1/2 -translate-y-1/2" style="color:var(--ink2)" id="hist-search-icon"></span>
-          <input id="hist-search" class="field pl-11" placeholder="Filter by symbol…" aria-label="Filter history by symbol" />
+        <div class="mb-4 max-w-sm relative">
+          <span class="absolute left-2.5 top-1/2 -translate-y-1/2" style="color:var(--text-3)" id="hist-search-icon"></span>
+          <input id="hist-search" class="field pl-8" placeholder="Filter by symbol…" aria-label="Filter history by symbol" />
         </div>
-        <div id="history-list" class="flex flex-col gap-5"></div>
-        <div id="history-empty" hidden class="clay p-10 text-center">
-          <div class="mx-auto w-16 h-16 rounded-3xl flex items-center justify-center mb-4" style="background:var(--mint-soft);color:var(--mint)" id="history-empty-icon"></div>
-          <p class="font-extrabold text-lg">Nothing fired yet</p>
+        <div id="history-list" class="flex flex-col gap-5 max-w-2xl"></div>
+        <div id="history-empty" hidden class="card p-10 text-center max-w-2xl">
+          <div class="mx-auto w-11 h-11 rounded-xl flex items-center justify-center mb-3" style="background:var(--surface-2);color:var(--text-2)" id="history-empty-icon"></div>
+          <p class="title">Nothing fired yet</p>
           <p class="sub mt-1">Alerts appear here the moment a rule triggers.</p>
         </div>
       </section>
 
       <!-- ============ WATCHLIST ============ -->
       <section id="page-watchlist" hidden>
-        <div class="mt-4 mb-6 flex items-end justify-between gap-3 flex-wrap">
+        <div class="mb-4 flex items-end justify-between gap-3 flex-wrap">
           <div>
-            <h1 class="page-title">Watchlist</h1>
+            <h1 class="display">Watchlist</h1>
             <p class="sub">Live price &amp; RSI across every watched symbol and timeframe.</p>
           </div>
-          <button id="wl-refresh" class="btn-soft">Refresh</button>
+          <button id="wl-refresh" class="btn btn-quiet">Refresh</button>
         </div>
-        <div id="watch-grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4"></div>
+        <div id="watch-grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3"></div>
       </section>
 
       <!-- ============ INSIGHTS ============ -->
       <section id="page-insights" hidden>
-        <div class="mt-4 mb-5">
-          <h1 class="page-title">Insights</h1>
+        <div class="mb-4">
+          <h1 class="display">Insights</h1>
           <p class="sub">What your rules have been doing.</p>
         </div>
-        <div id="ai-insights-card" hidden class="clay p-5 mb-6 flex items-start gap-3">
-          <span class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0" style="background:var(--violet-soft);color:var(--violet-deep)" id="ai-insights-icon"></span>
+        <div id="ai-insights-card" hidden class="card p-4 mb-4 flex items-start gap-3 max-w-3xl">
+          <span class="w-8 h-8 rounded-lg flex items-center justify-center flex-none" style="background:var(--accent-soft);color:var(--accent)" id="ai-insights-icon"></span>
           <div class="min-w-0 flex-1">
-            <p class="text-xs font-extrabold mb-1" style="color:var(--violet-deep)">AI SUMMARY <span class="font-bold normal-case" style="color:var(--ink2)">· local</span></p>
-            <p id="ai-insights-text" class="font-bold" style="color:var(--ink)">…</p>
+            <p class="label mb-1">AI summary · local</p>
+            <p id="ai-insights-text" class="text-sm">…</p>
           </div>
         </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div class="clay p-6">
-            <h2 class="section-title">Alerts by symbol</h2>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-4xl">
+          <div class="card p-4">
+            <h2 class="title">Alerts by symbol</h2>
             <p class="sub mb-4">Last 50 alerts</p>
             <div id="chart-symbols" role="img" class="flex flex-col gap-1"></div>
           </div>
-          <div class="clay p-6">
-            <h2 class="section-title">Alerts by hour</h2>
+          <div class="card p-4">
+            <h2 class="title">Alerts by hour</h2>
             <p class="sub mb-4">When your rules fire (ET, last 50)</p>
             <div id="chart-hours" role="img"></div>
-            <div class="flex justify-between mt-2 font-mono text-[10px] font-bold" style="color:var(--ink2)" aria-hidden="true">
+            <div class="flex justify-between mt-2 num text-[10px]" style="color:var(--text-3)" aria-hidden="true">
               <span>00</span><span>06</span><span>12</span><span>18</span><span>23</span>
             </div>
           </div>
         </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-          <a href="#/backtest" class="clay p-6 flex items-center gap-4 hover:brightness-[1.02] transition">
-            <span class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0" style="background:var(--amber-soft);color:var(--amber)" data-icon="flask"></span>
-            <span>
-              <span class="flex items-center gap-2"><span class="section-title">Backtesting</span></span>
-              <span class="sub block mt-1">Replay any rule against history to see how often it would have fired.</span>
-            </span>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 max-w-4xl">
+          <a href="#/backtest" class="card p-4 flex items-center gap-3">
+            <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)" data-icon="flask"></span>
+            <span><span class="title block">Backtesting</span><span class="sub block">Replay any rule against history to see how often it would have fired.</span></span>
           </a>
-          <a href="#/watchlist" class="clay p-6 flex items-center gap-4 hover:brightness-[1.02] transition">
-            <span class="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0" style="background:var(--sky-soft);color:var(--sky)" data-icon="grid"></span>
-            <span>
-              <span class="flex items-center gap-2"><span class="section-title">Symbol heatmap</span></span>
-              <span class="sub block mt-1">RSI across every symbol × timeframe in one glance.</span>
-            </span>
+          <a href="#/watchlist" class="card p-4 flex items-center gap-3">
+            <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)" data-icon="grid"></span>
+            <span><span class="title block">Symbol heatmap</span><span class="sub block">RSI across every symbol × timeframe in one glance.</span></span>
           </a>
         </div>
       </section>
 
       <!-- ============ BACKTEST ============ -->
       <section id="page-backtest" hidden>
-        <div class="mt-4 mb-6">
-          <h1 class="page-title">Backtest</h1>
+        <div class="mb-4">
+          <h1 class="display">Backtest</h1>
           <p class="sub">Replay any condition over recent bars to see how often it would have fired.</p>
         </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          <form id="bt-form" class="clay p-6 flex flex-col gap-4">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start max-w-4xl">
+          <form id="bt-form" class="card p-4 flex flex-col gap-3">
             <div class="grid grid-cols-2 gap-3">
-              <label class="text-xs font-extrabold" style="color:var(--ink2)">SYMBOL
-                <input id="bt-symbol" list="symbols" required class="field mt-1.5 font-mono uppercase" placeholder="AAPL" /></label>
-              <label class="text-xs font-extrabold" style="color:var(--ink2)">TIMEFRAME
-                <select id="bt-timeframe" class="field mt-1.5"></select></label>
+              <label class="label">Symbol
+                <input id="bt-symbol" list="symbols" required class="field mt-1 mono uppercase" placeholder="AAPL" /></label>
+              <label class="label">Timeframe
+                <select id="bt-timeframe" class="field mt-1"></select></label>
             </div>
-            <label class="text-xs font-extrabold" style="color:var(--ink2)">CONDITION
-              <select id="bt-type" class="field mt-1.5"></select></label>
+            <label class="label">Condition
+              <select id="bt-type" class="field mt-1"></select></label>
             <div id="bt-params" class="grid grid-cols-2 gap-3"></div>
-            <button type="submit" class="btn-primary w-full justify-center mt-2">Run backtest</button>
-            <p id="bt-error" hidden class="rounded-2xl px-4 py-3 text-sm font-bold" style="background:var(--coral-soft);color:var(--coral)" role="alert"></p>
+            <button type="submit" class="btn btn-primary w-full mt-1">Run backtest</button>
+            <p id="bt-error" hidden class="text-xs p-2.5 rounded" style="background:var(--sig-low-soft);color:var(--sig-low);border-radius:var(--r-ctl)" role="alert"></p>
           </form>
-          <div id="bt-results" class="clay p-6">
-            <div class="text-center py-10">
-              <div class="mx-auto w-16 h-16 rounded-3xl flex items-center justify-center mb-4" style="background:var(--amber-soft);color:var(--amber)" id="bt-icon"></div>
-              <p class="font-extrabold text-lg">Run a backtest</p>
+          <div id="bt-results" class="card p-4">
+            <div class="text-center py-8">
+              <div class="mx-auto w-11 h-11 rounded-xl flex items-center justify-center mb-3" style="background:var(--surface-2);color:var(--text-2)" id="bt-icon"></div>
+              <p class="title">Run a backtest</p>
               <p class="sub mt-1">Pick a symbol, timeframe, and condition, then Run. Uses the same lookback window the live engine sees.</p>
             </div>
           </div>
@@ -347,53 +532,64 @@
 
       <!-- ============ SETTINGS ============ -->
       <section id="page-settings" hidden>
-        <div class="mt-4 mb-5">
-          <h1 class="page-title">Settings</h1>
-          <p class="sub">Delivery, data source, and system status.</p>
+        <div class="mb-4">
+          <h1 class="display">Settings</h1>
+          <p class="sub">Appearance, delivery, data source, and system status.</p>
         </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          <div class="clay p-6">
-            <h2 class="section-title mb-1">Delivery channels</h2>
-            <p class="sub mb-4">We’ve discontinued SMS &amp; WhatsApp. Alert Radar now delivers by <strong>email only</strong>, via Resend.</p>
-            <div id="channel-cards" class="flex flex-col gap-3"></div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start max-w-4xl">
+          <div class="flex flex-col gap-4">
+            <div class="card p-4">
+              <h2 class="title mb-1">Appearance</h2>
+              <p class="sub mb-3">“System” follows your device. Picking Light or Dark overrides it until you change it back.</p>
+              <div class="seg" id="theme-seg" role="group" aria-label="Color theme">
+                <button type="button" data-theme-set="light">Light</button>
+                <button type="button" data-theme-set="dark">Dark</button>
+                <button type="button" data-theme-set="system">System</button>
+              </div>
+            </div>
+            <div class="card p-4">
+              <h2 class="title mb-1">Delivery channels</h2>
+              <p class="sub mb-3">We’ve discontinued SMS &amp; WhatsApp. Alert Radar now delivers by <strong>email only</strong>, via Resend.</p>
+              <div id="channel-cards" class="flex flex-col gap-2"></div>
+            </div>
+            <div class="card p-4" id="mode-card"></div>
           </div>
-          <div class="flex flex-col gap-6">
-            <div class="clay p-6">
-              <h2 class="section-title mb-1">Alert recipients</h2>
-              <p class="sub mb-4">Email addresses that receive your alerts — comma-separated. Saved instantly, no restart needed.</p>
-              <form id="recip-form" class="flex flex-col sm:flex-row gap-3">
+          <div class="flex flex-col gap-4">
+            <div class="card p-4">
+              <h2 class="title mb-1">Alert recipients</h2>
+              <p class="sub mb-3">Email addresses that receive your alerts — comma-separated. Saved instantly, no restart needed.</p>
+              <form id="recip-form" class="flex flex-col sm:flex-row gap-2">
                 <input id="recip-input" class="field flex-1" placeholder="you@example.com, ops@example.com" aria-label="Alert recipient emails" />
-                <button class="btn-primary shrink-0 justify-center" type="submit">Save</button>
+                <button class="btn btn-primary flex-none" type="submit">Save</button>
               </form>
-              <p id="recip-note" class="sub text-xs mt-2"></p>
-              <button type="button" class="btn-soft mt-4" onclick="openOnboard(true)">Replay onboarding</button>
+              <p id="recip-note" class="sub mt-2"></p>
+              <button type="button" class="btn btn-quiet mt-3" onclick="openOnboard(true)">Replay onboarding</button>
             </div>
-            <div class="clay p-6" id="mode-card"></div>
-            <div class="clay p-6">
-              <h2 class="section-title mb-3">Data source</h2>
-              <div class="flex items-center gap-3 mb-4">
-                <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--violet-soft);color:var(--violet-deep)" data-icon="db"></span>
-                <div><p class="font-extrabold">Massive</p><p class="sub">Real-time bars via Massive (formerly Polygon.io). Refreshes every 30s during market hours (9:30–16:00 ET, Mon–Fri)</p></div>
+            <div class="card p-4">
+              <h2 class="title mb-3">Data source</h2>
+              <div class="flex items-center gap-3 mb-3">
+                <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)" data-icon="db"></span>
+                <div><p class="text-sm font-semibold" id="src-name">—</p><p class="sub" id="src-desc"></p></div>
               </div>
-              <p class="text-xs font-extrabold mb-2" style="color:var(--ink2)">TIMEFRAMES</p>
-              <div id="set-timeframes" class="flex flex-wrap gap-2"></div>
+              <p class="label mb-2">Timeframes</p>
+              <div id="set-timeframes" class="flex flex-wrap gap-1.5"></div>
             </div>
-            <div class="clay p-6">
-              <h2 class="section-title mb-3">Developer</h2>
+            <div class="card p-4">
+              <h2 class="title mb-3">Developer</h2>
               <a href="/docs" target="_blank" rel="noopener" class="flex items-center gap-3 group">
-                <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--mint-soft);color:var(--mint)" data-icon="book"></span>
-                <span><span class="font-extrabold group-hover:underline">API reference</span><span class="sub block">Interactive OpenAPI docs for every endpoint</span></span>
+                <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)" data-icon="book"></span>
+                <span><span class="text-sm font-semibold group-hover:underline">API reference</span><span class="sub block">Interactive OpenAPI docs for every endpoint</span></span>
               </a>
-              <a href="https://github.com/siroxou" target="_blank" rel="noopener" class="flex items-center gap-3 group mt-4">
-                <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--violet-soft);color:var(--violet-deep)" data-icon="github"></span>
-                <span><span class="font-extrabold group-hover:underline">GitHub</span><span class="sub block">github.com/siroxou — source &amp; profile</span></span>
+              <a href="https://github.com/siroxou" target="_blank" rel="noopener" class="flex items-center gap-3 group mt-3">
+                <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)" data-icon="github"></span>
+                <span><span class="text-sm font-semibold group-hover:underline">GitHub</span><span class="sub block">github.com/siroxou — source &amp; profile</span></span>
               </a>
-              <div class="flex items-center gap-3 mt-4 opacity-70">
-                <span class="w-11 h-11 rounded-2xl flex items-center justify-center" style="background:var(--sky-soft);color:var(--sky)" data-icon="zap"></span>
-                <span><span class="font-extrabold">Webhooks &amp; API keys</span> <span class="chip chip-amber ml-1">Coming soon</span><span class="sub block">Push alert events to your own endpoints</span></span>
+              <div class="flex items-center gap-3 mt-3 opacity-60">
+                <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)" data-icon="zap"></span>
+                <span><span class="text-sm font-semibold">Webhooks &amp; API keys</span> <span class="chip chip-accent ml-1">Coming soon</span><span class="sub block">Push alert events to your own endpoints</span></span>
               </div>
             </div>
-            <div class="clay p-6" id="account-card"></div>
+            <div class="card p-4" id="account-card"></div>
           </div>
         </div>
       </section>
@@ -401,62 +597,63 @@
   </div>
 </div>
 
-<!-- ============ BOTTOM NAV (mobile) ============ -->
-<nav id="bottom-nav" class="lg:hidden fixed bottom-3 inset-x-3 z-40 clay flex gap-1 p-2" aria-label="Primary"
-     style="border-radius:24px;padding-bottom:calc(.5rem + env(safe-area-inset-bottom))"></nav>
+<!-- ============ TAB BAR (mobile) ============ -->
+<nav id="bottom-nav" class="tabbar chrome-float lg:hidden" aria-label="Primary"></nav>
 
-<!-- ============ MODAL ============ -->
-<div id="modal" class="fixed inset-0 z-[100] hidden items-center justify-center p-4"
-     style="background:rgba(45,42,69,.45);backdrop-filter:blur(6px)" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-  <div class="clay w-full max-w-lg max-h-[90dvh] overflow-y-auto p-6" style="border-radius:30px">
-    <div class="flex items-center justify-between mb-5">
-      <h3 id="modal-title" class="text-xl font-black">New Alert</h3>
-      <button id="modal-close" class="icon-btn" aria-label="Close dialog"></button>
-    </div>
-    <form id="rule-form" class="flex flex-col gap-4">
-      <div id="ai-gen" hidden class="clay-sm p-3">
-        <p class="text-xs font-extrabold flex items-center gap-1.5" style="color:var(--violet-deep)"><span id="ai-spark"></span>DESCRIBE IT — LOCAL AI FILLS THE FORM</p>
-        <div class="flex gap-2 mt-2">
+<!-- ============ SHEET (new/edit alert) ============ -->
+<div id="sheet-scrim" class="scrim" hidden></div>
+<div id="sheet" class="sheet chrome-float flex flex-col" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+  <span class="grabber" id="sheet-grab" aria-hidden="true"></span>
+  <div class="flex items-center justify-between gap-2 px-4 pt-3 pb-2 flex-none" id="sheet-head">
+    <h3 id="sheet-title" class="title">New Alert</h3>
+    <button id="sheet-close" class="icon-btn" aria-label="Close dialog"></button>
+  </div>
+  <div class="sheet-scroll px-4 pb-4" id="sheet-scroll">
+    <form id="rule-form" class="flex flex-col gap-3">
+      <div id="ai-gen" hidden class="well p-2.5">
+        <p class="label flex items-center gap-1.5"><span id="ai-spark"></span>Describe it — local AI fills the form</p>
+        <div class="flex gap-2 mt-1.5">
           <input id="ai-text" class="field flex-1" placeholder="e.g. email me when NVDA 5-min RSI drops below 15" />
-          <button type="button" id="ai-generate" class="btn-primary shrink-0 justify-center">Generate</button>
+          <button type="button" id="ai-generate" class="btn btn-primary flex-none">Generate</button>
         </div>
-        <p id="ai-hint" class="sub text-xs mt-2">AI drafts the fields below — review, then save. Runs on your machine.</p>
+        <p id="ai-hint" class="sub mt-1.5">AI drafts the fields below — review, then save. Runs on your machine.</p>
       </div>
       <input type="hidden" id="f-id" />
-      <label class="text-xs font-extrabold" style="color:var(--ink2)">NAME
-        <input id="f-name" required class="field mt-1.5" placeholder="e.g. NVDA dip alert" /></label>
+      <label class="label">Name
+        <input id="f-name" required class="field mt-1" placeholder="e.g. NVDA dip alert" /></label>
       <div class="grid grid-cols-2 gap-3">
-        <label class="text-xs font-extrabold" style="color:var(--ink2)">SYMBOL
-          <input id="f-symbol" list="symbols" required class="field mt-1.5 font-mono uppercase" placeholder="AAPL" />
+        <label class="label">Symbol
+          <input id="f-symbol" list="symbols" required class="field mt-1 mono uppercase" placeholder="AAPL" />
           <datalist id="symbols"></datalist></label>
-        <label class="text-xs font-extrabold" style="color:var(--ink2)">TIMEFRAME
-          <select id="f-timeframe" class="field mt-1.5"></select></label>
+        <label class="label">Timeframe
+          <select id="f-timeframe" class="field mt-1"></select></label>
       </div>
-      <label class="text-xs font-extrabold" style="color:var(--ink2)">CONDITION
-        <select id="f-type" class="field mt-1.5"></select></label>
+      <label class="label">Condition
+        <select id="f-type" class="field mt-1"></select></label>
       <div id="f-params" class="grid grid-cols-2 gap-3"></div>
-      <p class="sub text-xs">Emails go to your saved recipients — edit them in <a href="#/settings" class="font-bold" style="color:var(--violet-deep)">Settings</a>.</p>
-      <label class="switch mt-1">
+      <p class="sub">Emails go to your saved recipients — edit them in <a href="#/settings" class="underline" style="color:var(--accent)">Settings</a>.</p>
+      <label class="switch">
         <input type="checkbox" id="f-enabled" class="sr-only" checked />
         <span class="track" aria-hidden="true"></span>
-        <span class="font-extrabold text-sm">Enabled</span>
+        <span class="text-sm font-medium">Enabled</span>
       </label>
-      <p id="form-error" hidden class="rounded-2xl px-4 py-3 text-sm font-bold" style="background:var(--coral-soft);color:var(--coral)" role="alert"></p>
+      <p id="form-error" hidden class="text-xs p-2.5" style="background:var(--sig-low-soft);color:var(--sig-low);border-radius:var(--r-ctl)" role="alert"></p>
       <div class="flex justify-end gap-2 mt-1">
-        <button type="button" id="modal-cancel" class="btn-soft">Cancel</button>
-        <button type="submit" class="btn-primary">Save alert</button>
+        <button type="button" id="sheet-cancel" class="btn btn-quiet">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save alert</button>
       </div>
     </form>
   </div>
 </div>
 
 <!-- ============ ONBOARDING ============ -->
-<div id="onboard" class="fixed inset-0 z-[120] hidden items-center justify-center p-4"
-     style="background:rgba(45,42,69,.5);backdrop-filter:blur(6px)" role="dialog" aria-modal="true" aria-labelledby="ob-title">
-  <div class="clay w-full max-w-md p-7 enter" style="border-radius:30px"><div id="ob-body"></div></div>
+<div id="ob-scrim" class="scrim" hidden style="z-index:110"></div>
+<div id="onboard" class="sheet chrome-float" hidden style="z-index:120" role="dialog" aria-modal="true" aria-labelledby="ob-title">
+  <span class="grabber" aria-hidden="true"></span>
+  <div class="p-5" id="ob-body"></div>
 </div>
 
-<div id="toast" role="status" aria-live="polite" class="pointer-events-none fixed bottom-24 lg:bottom-8 left-1/2 -translate-x-1/2 z-[110] opacity-0 transition-opacity"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 /* ================= icons (Lucide-style inline SVG) ================= */
@@ -474,24 +671,161 @@ const I = {
   trash:'<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   pause:'<rect x="6" y="4" width="4" height="16" rx="1.2"/><rect x="14" y="4" width="4" height="16" rx="1.2"/>',
   play:'<path d="M7 4.5v15l12-7.5Z"/>',
-  sms:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-  phone:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.9.35 1.79.68 2.64a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.44-1.27a2 2 0 0 1 2.11-.45c.85.33 1.74.56 2.64.68A2 2 0 0 1 22 16.92z"/>',
   zap:'<path d="M13 2 3 14h7l-1 8 11-12h-7l1-8z"/>',
   mail:'<rect x="2" y="4" width="20" height="16" rx="3"/><path d="m2 7 10 7L22 7"/>',
-  smartphone:'<rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M12 18h.01"/>',
   activity:'<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   search:'<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
   warn:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   book:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
   users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   db:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
-  eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
   github:'<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>',
   sparkles:'<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
+  panel:'<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m4.9 19.1 1.4-1.4"/><path d="m17.7 6.3 1.4-1.4"/>',
+  moon:'<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
 };
-const svg = (n, cls = 'w-5 h-5') =>
-  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
+const svg = (n, cls = 'w-4 h-4') =>
+  `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${I[n]}</svg>`;
+
+/* ============================================================
+   MOTION — one spring implementation, one rAF loop.
+   The loop starts on demand and STOPS when the last spring
+   settles, so nothing keeps ticking behind an idle page (fm-8).
+   ============================================================ */
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
+const springs = new Set();
+let rafId = 0, lastT = 0, looping = false;
+
+function pump(now) {
+  looping = false; rafId = 0;
+  const dt = Math.min((now - lastT) / 1000, 1 / 20);
+  lastT = now;
+  for (const s of springs) if (!s.step(dt)) springs.delete(s);
+  if (springs.size) { looping = true; rafId = requestAnimationFrame(pump); }
+}
+function wake() {
+  // Don't trust `looping` alone. It is only ever cleared by pump(), so a frame
+  // that was scheduled but never delivered would pin the flag on and every live
+  // value would stop updating for the rest of the session. If no frame has landed
+  // for a second, re-arm regardless of what the flag claims.
+  if (looping && performance.now() - lastT < 1000) return;
+  if (rafId) cancelAnimationFrame(rafId);
+  looping = true;
+  lastT = performance.now();
+  rafId = requestAnimationFrame(pump);
+}
+// A backgrounded tab pauses rAF, so the scheduled callback may never arrive.
+// The "is the loop alive?" flag would stay set, wake() would keep early-returning,
+// and every live value on the page would freeze for the rest of the session.
+// Re-arm explicitly on return instead of trusting a callback that never came.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (rafId) cancelAnimationFrame(rafId);
+  looping = false; rafId = 0;
+  if (springs.size) wake();
+});
+
+class Spring {
+  // response = seconds to reach target (NOT a duration); damping 1 = no overshoot.
+  constructor(value, onChange, opts = {}) {
+    this.value = value; this.target = value; this.velocity = 0;
+    this.damping = opts.damping ?? 1;
+    this.response = opts.response ?? 0.3;
+    this.epsilon = opts.epsilon ?? 0.01;
+    this.onChange = onChange;
+    this.onRest = opts.onRest || null;
+    this.dead = false;
+  }
+  // Retarget without touching velocity — motion stays continuous mid-flight.
+  to(target, velocity) {
+    this.target = target;
+    if (velocity !== undefined) this.velocity = velocity;
+    // Reduced motion still COMPLETES the transition — it just skips the travel,
+    // so onRest must fire or nothing downstream ever learns it finished.
+    if (REDUCED.matches && velocity === undefined) return this.set(target, true);
+    if (!this.dead) { springs.add(this); wake(); }
+    return this;
+  }
+  // Jump with no animation. Silent by default: this is what a drag calls on every
+  // pointermove, and what positions a sheet before it springs in — neither is a
+  // settle, and firing onRest there runs the "finished closing" handler mid-open.
+  set(value, notify = false) {
+    this.value = this.target = value; this.velocity = 0;
+    springs.delete(this); this.onChange(this.value);
+    if (notify && this.onRest) this.onRest();
+    return this;
+  }
+  // Seize the PRESENTATION value — this is what makes an interrupt seamless.
+  seize() { springs.delete(this); return this.value; }
+  dispose() { this.dead = true; springs.delete(this); }
+  step(dt) {
+    const w = (2 * Math.PI) / this.response;
+    // Fixed sub-steps keep the integrator stable at any frame rate.
+    const n = Math.max(1, Math.ceil(dt * 240));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      const a = -w * w * (this.value - this.target) - 2 * this.damping * w * this.velocity;
+      this.velocity += a * h;
+      this.value += this.velocity * h;
+    }
+    const settled = Math.abs(this.value - this.target) < this.epsilon && Math.abs(this.velocity) < this.epsilon * 12;
+    if (settled) { this.value = this.target; this.velocity = 0; }
+    this.onChange(this.value);
+    if (settled && this.onRest) this.onRest();
+    return !settled;
+  }
+}
+
+// Where a flick would come to rest — exponential decay, the form real
+// scroll views use. The textbook v²/2a is NOT the shipped behaviour.
+//
+// The rate has to match the SCALE of the thing being thrown. 0.998 multiplies
+// velocity by ~499, which is right for a sheet travelling hundreds of px but
+// swamps a 96px drawer — at that gain even a slow crawl projects far enough to
+// commit, so a gentle drag you meant to abandon snaps open instead.
+const DECEL_SCROLL = 0.998;   // long throws: the sheet
+const DECEL_SHORT  = 0.99;    // short detents: row action drawers (~99x)
+const project = (v, d = DECEL_SCROLL) => (v / 1000) * d / (1 - d);
+// Progressive resistance past a boundary; never a hard stop.
+const rubberband = (over, dim, c = 0.55) => (over * dim * c) / (dim + c * Math.abs(over));
+
+// Tracks the last few pointer samples so release velocity is real, not guessed.
+class Tracker {
+  constructor() { this.samples = []; }
+  push(v) { const t = performance.now(); this.samples.push([t, v]); if (this.samples.length > 6) this.samples.shift(); }
+  velocity() {
+    const s = this.samples;
+    if (s.length < 2) return 0;
+    const [t0, v0] = s[0], [t1, v1] = s[s.length - 1];
+    const dt = (t1 - t0) / 1000;
+    return dt > 0.001 ? (v1 - v0) / dt : 0;
+  }
+  reset() { this.samples.length = 0; }
+}
+
+/* ============================================================
+   LAW 1 — press response fires on POINTERDOWN, not on click.
+   Dragging ~12px away cancels it, exactly like a native tap.
+   Listeners are torn down every time; nothing accumulates.
+   ============================================================ */
+document.addEventListener('pointerdown', (e) => {
+  const t = e.target.closest('button, a[href], .row-face, label.switch');
+  if (!t || t.disabled) return;
+  t.classList.add('is-pressed');
+  const x0 = e.clientX, y0 = e.clientY;
+  const off = () => {
+    t.classList.remove('is-pressed');
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', off);
+    document.removeEventListener('pointercancel', off);
+  };
+  const move = (ev) => { if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 12) off(); };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', off);
+  document.addEventListener('pointercancel', off);
+}, { passive: true });
 
 /* ================= state & helpers ================= */
 let META = null, rulesCache = [], snap = { rules: [], alerts: [] }, snapMap = {}, settingsCache = { email_recipients: [] };
@@ -526,14 +860,47 @@ function onUnauthenticated() {
   location.reload();  // the server serves the unlock page for an unauthenticated GET /
 }
 
-function toast(msg, ok = true) {
+let toastTimer = 0;
+const toastSpring = new Spring(0, (v) => {
   const t = el('toast');
-  t.innerHTML = `<div class="clay-sm px-5 py-3 text-sm font-extrabold flex items-center gap-2" style="color:${ok ? 'var(--mint)' : 'var(--coral)'}">${svg(ok ? 'check' : 'warn', 'w-4 h-4')}${esc(msg)}</div>`;
-  t.style.opacity = 1; setTimeout(() => (t.style.opacity = 0), 2800);
+  t.style.opacity = v;
+  t.style.transform = `translateY(${(1 - v) * 8}px)`;
+}, { damping: 1, response: 0.28 });
+function toast(msg, ok = true) {
+  el('toast').innerHTML =
+    `<div class="card px-3 py-2 text-sm flex items-center gap-2" style="box-shadow:var(--shadow-float);color:${ok ? 'var(--text)' : 'var(--sig-low)'}">${svg(ok ? 'check' : 'warn')}${esc(msg)}</div>`;
+  toastSpring.to(1);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastSpring.to(0), 2800);
 }
 
-const HUES = [['#E7E2FE','#4A3BC9'],['#D5F5E8','#0E6B4F'],['#FFE1E4','#A62B47'],['#FFEFCF','#7A4E00'],['#DCF0FF','#0F5E8C'],['#FCE1F1','#8A2F63']];
-const hueFor = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 997; return HUES[h % HUES.length]; };
+// Per-symbol identity survives, pulled far enough down that it can never be
+// mistaken for a market signal. Saturation is reserved for RSI values.
+const hueFor = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 997; return (h % 12) * 30; };
+function symStyle(sym) {
+  const h = hueFor(sym);
+  return `background:hsl(${h} var(--sym-s) 50% / var(--sym-bg-a));color:hsl(${h} var(--sym-s) var(--sym-l))`;
+}
+
+/* ============================================================
+   Keyed reconciliation.
+   The old build replaced innerHTML every 3s, which would destroy
+   a half-finished swipe and every running number spring. Rows are
+   now created once and updated in place; removals dispose first.
+   ============================================================ */
+function reconcile(container, items, keyOf, create, update) {
+  const seen = new Map();
+  for (const n of container.children) seen.set(n.dataset.key, n);
+  items.forEach((item, i) => {
+    const k = keyOf(item);
+    let node = seen.get(k);
+    if (node) seen.delete(k);
+    else { node = create(item); node.dataset.key = k; }
+    update(node, item);
+    if (container.children[i] !== node) container.insertBefore(node, container.children[i] || null);
+  });
+  for (const n of seen.values()) { n._dispose && n._dispose(); n.remove(); }
+}
 
 /* ================= navigation ================= */
 const NAV = [
@@ -549,23 +916,24 @@ const GROUPS = [['Overview', 0, 3], ['Explore', 3, 6], ['System', 6, 7]];
 const BOTTOM = ['dashboard', 'alerts', 'history', 'insights', 'settings'];
 const TITLES = { dashboard:'Dashboard', alerts:'Alerts', history:'History', watchlist:'Watchlist', insights:'Insights', backtest:'Backtest', settings:'Settings' };
 
-function navItem(n, cls) {
-  const soon = n.soon ? '<span class="chip chip-amber ml-auto">Soon</span>' : '';
-  return `<a href="#/${n.id}" data-nav="${n.id}" class="${cls}">${svg(n.icon, 'w-5 h-5 shrink-0')}<span>${n.label}</span>${soon}</a>`;
-}
 function renderNav() {
   el('side-nav').innerHTML = GROUPS.map(([g, a, b]) =>
-    `<div><p class="px-3 mb-2 text-[11px] font-black tracking-widest" style="color:#9A94BE">${g.toUpperCase()}</p>
-     <div class="flex flex-col gap-1">${NAV.slice(a, b).map((n) => navItem(n, 'nav-item')).join('')}</div></div>`).join('');
+    `<div><p class="label px-1.5 mb-1">${g}</p>
+     <div class="flex flex-col gap-0.5">${NAV.slice(a, b).map((n) =>
+       `<a href="#/${n.id}" data-nav="${n.id}" class="nav-item">${svg(n.icon)}<span>${n.label}</span></a>`).join('')}</div></div>`).join('');
   el('bottom-nav').innerHTML = NAV.filter((n) => BOTTOM.includes(n.id)).map((n) =>
-    `<a href="#/${n.id}" data-nav="${n.id}" class="bnav-item">${svg(n.icon, 'w-5 h-5')}<span>${n.label}</span></a>`).join('');
+    `<a href="#/${n.id}" data-nav="${n.id}" class="tab-item">${svg(n.icon, 'w-[18px] h-[18px]')}<span>${n.label}</span></a>`).join('');
 }
 let currentPage = 'dashboard', firstRoute = true;
 function route() {
   const p = (location.hash.replace(/^#\//, '') || 'dashboard');
   currentPage = TITLES[p] ? p : 'dashboard';
   for (const k of Object.keys(TITLES)) el(`page-${k}`).hidden = k !== currentPage;
-  document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === currentPage));
+  document.querySelectorAll('[data-nav]').forEach((a) => {
+    const on = a.dataset.nav === currentPage;
+    a.classList.toggle('active', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
   document.title = `${TITLES[currentPage]} · Alert Radar`;
   if (currentPage === 'watchlist') renderWatchlist();
   if (currentPage === 'backtest') setupBacktest();
@@ -576,7 +944,108 @@ function route() {
 }
 window.addEventListener('hashchange', route);
 
-/* ================= dashboard tiles ================= */
+/* ============================================================
+   LAW 7 — the sidebar toggle outranks the responsive default,
+   and its lit state is read from MEASURED WIDTH, never from the
+   class it just set. A flag would lie during the auto-fold.
+   ============================================================ */
+const shell = el('shell'), rail = el('rail');
+function syncNavToggle() {
+  const open = rail.getBoundingClientRect().width > 1;
+  const btn = el('nav-toggle');
+  btn.setAttribute('aria-pressed', String(open));
+  btn.style.color = open ? 'var(--text)' : '';
+  rail.setAttribute('aria-hidden', String(!open));
+  rail.querySelectorAll('a').forEach((a) => a.tabIndex = open ? 0 : -1);
+}
+el('nav-toggle').addEventListener('click', () => {
+  const open = rail.getBoundingClientRect().width > 1;
+  shell.classList.toggle('nav-hidden', open);
+  shell.classList.toggle('nav-shown', !open);
+});
+new ResizeObserver(syncNavToggle).observe(rail);   // one observer for the page's life
+addEventListener('resize', syncNavToggle);
+
+/* ================= theme (explicit choice beats the media query) ================= */
+function currentTheme() { return document.documentElement.dataset.theme || 'system'; }
+function resolvedTheme() {
+  const t = currentTheme();
+  return t === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+}
+function setTheme(t) {
+  if (t === 'system') { delete document.documentElement.dataset.theme; localStorage.removeItem('ar_theme'); }
+  else { document.documentElement.dataset.theme = t; localStorage.setItem('ar_theme', t); }
+  syncTheme();
+}
+function syncTheme() {
+  const cur = currentTheme(), res = resolvedTheme();
+  el('theme-btn').innerHTML = svg(res === 'dark' ? 'sun' : 'moon');
+  el('theme-btn').setAttribute('aria-label', res === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+  el('theme-seg').querySelectorAll('[data-theme-set]').forEach((b) =>
+    b.setAttribute('aria-pressed', String(b.dataset.themeSet === cur)));
+}
+el('theme-btn').addEventListener('click', () => setTheme(resolvedTheme() === 'dark' ? 'light' : 'dark'));
+el('theme-seg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-theme-set]'); if (b) setTheme(b.dataset.themeSet);
+});
+matchMedia('(prefers-color-scheme: light)').addEventListener('change', syncTheme);
+
+/* ============================================================
+   ALERT LAG — the honest end-to-end "market move → email" figure.
+
+   It is derived, not hardcoded, because the dominant term is not a
+   constant: a rule only ever sees CLOSED bars, so a move is invisible
+   until its bar boundary. That wait averages half the timeframe —
+   ~7.5 min on a 15-minute rule — and dwarfs everything else combined.
+   Change your rules to 5min and this number drops on its own.
+   ============================================================ */
+const tfSeconds = (v) => {                       // "15min" -> 900, "1hour" -> 3600
+  const m = /^(\d+)\s*(min|hour)/.exec(v || '');
+  return m ? Number(m[1]) * (m[2] === 'hour' ? 3600 : 60) : 0;
+};
+// Everything downstream of the bar close: Alpaca publish lag (~15s, provider
+// side) + average wait for the next scheduler ping (~30s on a 1-min cron) +
+// cycle execution (~2s). An estimate, and deliberately the small term.
+const LAG_OVERHEAD_S = 47;
+function typicalLagSeconds() {
+  const tf = rulesCache.filter((r) => r.enabled).map((r) => tfSeconds(r.timeframe)).filter(Boolean);
+  if (!tf.length) return null;
+  const meanQuantization = tf.reduce((a, b) => a + b, 0) / tf.length / 2;
+  return meanQuantization + LAG_OVERHEAD_S;
+}
+function shortDuration(s) {
+  if (s == null) return '—';
+  if (s < 90) return `${Math.round(s)}s`;
+  if (s < 5400) return `${Math.round(s / 60)}m`;
+  return `${(s / 3600).toFixed(1)}h`;
+}
+// Seconds since the engine last completed a healthy cycle. Server clock vs
+// browser clock, so clamp — a skewed client must not render a negative age.
+function dataAgeSeconds() {
+  return snap.last_success_ms ? Math.max(0, (Date.now() - snap.last_success_ms) / 1000) : null;
+}
+function refreshLagTile() {
+  const node = el('tiles').querySelector('[data-key="lag"]');
+  if (!node) return;
+  const lag = typicalLagSeconds();
+  const tfs = [...new Set(rulesCache.filter((r) => r.enabled).map((r) => tfLabel(r.timeframe)))];
+  node.title = lag == null
+    ? 'Enable a rule to see the typical alert lag.'
+    : `Typical delay from a market move to the email landing: about ${shortDuration(lag)}.\n\n`
+      + `Most of it is waiting for the bar to close — rules are evaluated on closed bars only, `
+      + `so a move is invisible until its bar ends (on average half the timeframe).\n`
+      + `Your enabled rules use: ${tfs.join(', ')}.\n\n`
+      + `The remaining ~${LAG_OVERHEAD_S}s is data publish lag, the scheduler interval, and the cycle itself. `
+      + `Outside market hours, alerts wait for the next open.`;
+  const age = dataAgeSeconds();
+  const dead = snap.deadman_seconds && age != null && age > snap.deadman_seconds;
+  node.querySelector('.stat-n').style.color = dead ? 'var(--sig-low)' : '';
+  node.querySelector('.sub').textContent = age == null
+    ? 'Typical · no cycle yet'
+    : `Typical · checked ${shortDuration(age)} ago`;
+}
+
+/* ================= dashboard stat strip ================= */
 function renderTiles() {
   const enabled = rulesCache.filter((r) => r.enabled).length;
   const fired = (snap.rules || []).filter((r) => r.fired).length;
@@ -584,58 +1053,186 @@ function renderTiles() {
   const todayCount = (snap.alerts || []).filter((a) => (a.ts || '').startsWith(today)).length;
   const mkt = snap.market_open;
   const tiles = [
-    { icon: 'bell', bg: 'var(--violet-soft)', fg: 'var(--violet-deep)', n: enabled, label: 'Active rules' },
-    { icon: 'warn', bg: 'var(--coral-soft)', fg: 'var(--coral)', n: fired, label: 'Triggered now' },
-    { icon: 'activity', bg: 'var(--mint-soft)', fg: 'var(--mint)', n: todayCount, label: 'Alerts today' },
-    { icon: 'clock', bg: mkt ? 'var(--mint-soft)' : 'var(--amber-soft)', fg: mkt ? 'var(--mint)' : 'var(--amber)', n: mkt ? 'Open' : 'Closed', label: 'Market (ET)' },
+    { key: 'active', n: enabled, label: 'Active rules' },
+    { key: 'fired', n: fired, label: 'Triggered now', tone: fired ? 'var(--sig-low)' : '' },
+    { key: 'today', n: todayCount, label: 'Alerts today' },
+    { key: 'lag', text: shortDuration(typicalLagSeconds()), label: 'Typical' },
+    { key: 'market', text: mkt ? 'Open' : 'Closed', label: 'Market (ET)' },
   ];
-  el('tiles').innerHTML = tiles.map((t) => `
-    <div class="clay p-5">
-      <span class="w-10 h-10 rounded-xl flex items-center justify-center mb-3" style="background:${t.bg};color:${t.fg}">${svg(t.icon, 'w-5 h-5')}</span>
-      <p class="font-mono text-3xl font-bold tabular-nums leading-none">${t.n}</p>
-      <p class="sub mt-1.5">${t.label}</p>
-    </div>`).join('');
+  reconcile(el('tiles'), tiles, (t) => t.key,
+    () => {
+      const n = document.createElement('div');
+      n.className = 'stat';
+      n.innerHTML = '<p class="stat-n">—</p><p class="sub"></p>';
+      return n;
+    },
+    (n, t) => {
+      const v = n.firstChild;
+      v.style.color = t.tone || '';
+      if (t.text !== undefined) { v.textContent = t.text; }
+      else {
+        // Counts spring from their on-screen value so a tick mid-flight retargets.
+        if (!n._spring) n._spring = new Spring(t.n, (x) => { v.textContent = Math.round(x); }, { response: 0.35 });
+        n._spring.to(t.n);
+        n._dispose = () => n._spring.dispose();
+      }
+      n.lastChild.textContent = t.label;
+    });
+  refreshLagTile();   // must run after reconcile — it rewrites the lag tile's sub line
 }
 
-/* ================= rule cards ================= */
+/* ============================================================
+   RULE ROWS — created once, updated in place, swipeable.
+   ============================================================ */
+const ACTIONS_W = 96;   // px of action drawer revealed by a full swipe
+let openRow = null;
+
 function statusChip(rule, live) {
-  if (live && live.error) return '<span class="chip chip-amber"><span class="dot"></span>Error</span>';
-  if (!rule.enabled) return `<span class="chip chip-gray">${svg('pause', 'w-3 h-3')}Paused</span>`;
-  if (live && live.fired) return '<span class="chip chip-coral"><span class="dot live-dot"></span>Triggered</span>';
-  return '<span class="chip chip-mint"><span class="dot"></span>Watching</span>';
+  if (live && live.error) return '<span class="chip chip-accent"><span class="dot"></span>Error</span>';
+  if (!rule.enabled) return '<span class="chip chip-neutral">Paused</span>';
+  if (live && live.fired) return '<span class="chip chip-low"><span class="dot"></span>Triggered</span>';
+  return '<span class="chip chip-neutral"><span class="dot"></span>Watching</span>';
 }
-function ruleCard(rule) {
+
+function createRow() {
+  const n = document.createElement('div');
+  n.className = 'row';
+  n.innerHTML = `
+    <button type="button" class="row-face">
+      <span class="sym"></span>
+      <span class="min-w-0 flex-1">
+        <span class="row-name block"></span>
+        <span class="row-meta block"></span>
+      </span>
+      <span class="row-status hidden sm:block"></span>
+      <span class="row-val"></span>
+    </button>
+    <div class="row-actions">
+      <button type="button" class="icon-btn" data-act="toggle"></button>
+      <button type="button" class="icon-btn danger" data-act="delete"></button>
+    </div>`;
+
+  const face = n.querySelector('.row-face');
+  // x = 0 closed, -ACTIONS_W fully open. Written only by the spring.
+  n._x = new Spring(0, (v) => { face.style.transform = `translateX(${v}px)`; }, { response: 0.3 });
+  n._dispose = () => { n._x.dispose(); n._val && n._val.dispose(); if (openRow === n) openRow = null; };
+  n._openRow = (open) => {
+    if (open && openRow && openRow !== n) openRow._openRow(false);
+    openRow = open ? n : (openRow === n ? null : openRow);
+    n._x.to(open ? -ACTIONS_W : 0);
+  };
+  // A focused action button must be visible — otherwise the drawer is a
+  // keyboard trap that renders its own controls off-screen.
+  n.addEventListener('focusin', (e) => {
+    if (e.target.closest('.row-actions') && matchMedia('(max-width: 767px)').matches) n._openRow(true);
+  });
+  attachSwipe(n, face);
+  return n;
+}
+
+function updateRow(n, rule) {
   const live = snapMap[rule.id];
-  const fired = rule.enabled && live && live.fired;
-  const [bg, fg] = hueFor(rule.symbol);
-  const desc = (live && live.description) || `${rule.condition.type} ${Object.entries(rule.condition).filter(([k]) => k !== 'type').map(([k, v]) => `${k}=${v}`).join(' ')}`;
-  return `
-  <div class="${fired ? 'clay card-fired' : 'clay'} p-5 ${rule.enabled ? '' : 'opacity-60'}" data-id="${rule.id}">
-    <div class="flex items-start gap-3">
-      <span class="w-11 h-11 rounded-2xl flex items-center justify-center font-mono text-xs font-bold shrink-0"
-            style="background:${bg};color:${fg};box-shadow:inset 0 -3px 6px rgba(0,0,0,.06), inset 0 2px 4px rgba(255,255,255,.8)">${esc(rule.symbol.slice(0, 4))}</span>
-      <div class="min-w-0 flex-1">
-        <p class="font-extrabold truncate">${esc(rule.name)}</p>
-        <p class="sub text-xs mt-0.5 truncate">${tfLabel(rule.timeframe)} · ${esc(desc)}</p>
-      </div>
-      <span class="shrink-0">${statusChip(rule, live)}</span>
-    </div>
-    <div class="flex items-center justify-between mt-3">
-      <div class="flex -ml-2">
-        <button class="icon-btn" data-act="edit" data-id="${rule.id}" aria-label="Edit ${esc(rule.name)}">${svg('pencil', 'w-4 h-4')}</button>
-        <button class="icon-btn" data-act="toggle" data-id="${rule.id}" aria-label="${rule.enabled ? 'Pause' : 'Resume'} ${esc(rule.name)}">${svg(rule.enabled ? 'pause' : 'play', 'w-4 h-4')}</button>
-        <button class="icon-btn danger" data-act="delete" data-id="${rule.id}" aria-label="Delete ${esc(rule.name)}">${svg('trash', 'w-4 h-4')}</button>
-      </div>
-      <span class="font-mono text-2xl font-bold tabular-nums" style="color:${fired ? 'var(--coral)' : 'var(--ink)'}">${live && live.value != null ? fmt(live.value) : '—'}</span>
-    </div>
-  </div>`;
+  const fired = !!(rule.enabled && live && live.fired);
+  const desc = (live && live.description) ||
+    `${rule.condition.type} ${Object.entries(rule.condition).filter(([k]) => k !== 'type').map(([k, v]) => `${k}=${v}`).join(' ')}`;
+
+  n.classList.toggle('fired', fired);
+  n.classList.toggle('paused', !rule.enabled);
+  n._rule = rule;
+
+  const sym = n.querySelector('.sym');
+  sym.textContent = rule.symbol.slice(0, 5);
+  sym.style.cssText = symStyle(rule.symbol);
+  n.querySelector('.row-name').textContent = rule.name;
+  n.querySelector('.row-meta').textContent = `${tfLabel(rule.timeframe)} · ${desc}`;
+  n.querySelector('.row-status').innerHTML = statusChip(rule, live);
+  n.querySelector('.row-face').setAttribute('aria-label', `Edit ${rule.name}`);
+
+  const valEl = n.querySelector('.row-val');
+  const v = live && live.value != null ? Number(live.value) : null;
+  if (v === null) { n._val && n._val.dispose(); n._val = null; valEl.textContent = '—'; }
+  else {
+    // Damping 1.0 — a price must never overshoot the number it is reporting.
+    if (!n._val) n._val = new Spring(v, (x) => { valEl.textContent = x.toFixed(2); }, { response: 0.35, epsilon: 0.004 });
+    n._val.to(v);
+  }
+
+  const tog = n.querySelector('[data-act="toggle"]');
+  tog.innerHTML = svg(rule.enabled ? 'pause' : 'play');
+  tog.setAttribute('aria-label', `${rule.enabled ? 'Pause' : 'Resume'} ${rule.name}`);
+  const del = n.querySelector('[data-act="delete"]');
+  del.innerHTML = svg('trash');
+  del.setAttribute('aria-label', `Delete ${rule.name}`);
+}
+
+/* ---- swipe: 10px threshold, direction lock, 1:1, rubber-band, projected snap ---- */
+function attachSwipe(row, face) {
+  let id = null, x0 = 0, y0 = 0, base = 0, axis = null;
+  const track = new Tracker();
+
+  face.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!matchMedia('(max-width: 767px)').matches) return;   // desktop reveals on hover instead
+    id = e.pointerId; x0 = e.clientX; y0 = e.clientY; axis = null;
+    base = row._x.seize();          // start from the PRESENTATION value, mid-flight or not
+    track.reset(); track.push(e.clientX);
+  });
+
+  face.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== id) return;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (!axis) {
+      if (Math.hypot(dx, dy) < 10) return;                   // below threshold, commit to nothing
+      axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (axis === 'y') { id = null; return; }               // it was a scroll — let go cleanly
+      // Capture keeps tracking alive once the finger leaves the row. It can throw
+      // if the pointer is already gone; losing capture is survivable, so don't
+      // let it abort the drag we're mid-way through setting up.
+      try { face.setPointerCapture(id); } catch {}
+    }
+    track.push(e.clientX);
+    let x = base + dx;
+    if (x > 0) x = rubberband(x, 260);                       // resist past closed
+    if (x < -ACTIONS_W) x = -ACTIONS_W + rubberband(x + ACTIONS_W, 260);
+    row._x.set(x);
+    e.preventDefault();
+  });
+
+  const end = (e) => {
+    if (e.pointerId !== id) return;
+    const wasDrag = axis === 'x';
+    id = null; axis = null;
+    if (!wasDrag) return;
+    const v = track.velocity();
+    // Snap to whichever detent the throw was actually heading for.
+    const projected = row._x.value + project(v, DECEL_SHORT);
+    const open = projected < -ACTIONS_W / 2;
+    if (open && openRow && openRow !== row) openRow._openRow(false);
+    openRow = open ? row : (openRow === row ? null : openRow);
+    // Bounce only because the gesture itself carried momentum.
+    row._x.damping = 0.8;
+    row._x.to(open ? -ACTIONS_W : 0, v);
+    row._x.onRest = () => { row._x.damping = 1; };
+  };
+  face.addEventListener('pointerup', end);
+  face.addEventListener('pointercancel', end);
+  // A drag must not also fire the row's click.
+  face.addEventListener('click', (e) => {
+    if (Math.abs(row._x.value) > 2) { e.preventDefault(); e.stopPropagation(); row._openRow(false); }
+  }, true);
 }
 
 function renderDashRules() {
   const enabled = rulesCache.filter((r) => r.enabled);
   const sorted = [...enabled].sort((a, b) => ((snapMap[b.id]?.fired) ? 1 : 0) - ((snapMap[a.id]?.fired) ? 1 : 0));
-  el('dash-rules').innerHTML = sorted.slice(0, 6).map(ruleCard).join('') ||
-    `<div class="clay p-8 text-center sm:col-span-2"><p class="font-extrabold">No active rules</p><p class="sub mt-1 mb-4">Create one to start monitoring.</p><button class="btn-primary mx-auto" onclick="openModal()">Create an alert</button></div>`;
+  const list = sorted.slice(0, 7);
+  const box = el('dash-rules');
+  if (!list.length) {
+    box.innerHTML = '<div class="p-8 text-center"><p class="title">No active rules</p><p class="sub mt-1 mb-3">Create one to start monitoring.</p><button class="btn btn-primary mx-auto" onclick="openSheet()">Create an alert</button></div>';
+    return;
+  }
+  if (box.firstElementChild && !box.firstElementChild.classList.contains('row')) box.innerHTML = '';
+  reconcile(box, list, (r) => r.id, createRow, updateRow);
 }
 function renderAlertsGrid() {
   const q = el('rule-search').value.trim().toLowerCase();
@@ -643,26 +1240,27 @@ function renderAlertsGrid() {
   const list = rulesCache.filter((r) =>
     (!q || r.name.toLowerCase().includes(q) || r.symbol.toLowerCase().includes(q)) &&
     (!ty || r.condition.type === ty));
-  el('alerts-grid').innerHTML = list.map(ruleCard).join('');
+  reconcile(el('alerts-grid'), list, (r) => r.id, createRow, updateRow);
+  el('alerts-grid').hidden = list.length === 0;
   el('alerts-empty').hidden = list.length > 0;
 }
 
 /* ================= feed & history ================= */
 function feedItem(a) {
-  return `<li class="clay-sm p-3">
+  return `<li class="well p-2.5">
     <div class="flex items-center justify-between gap-2">
-      <span class="flex items-center gap-2 font-extrabold text-sm min-w-0"><span class="w-2 h-2 rounded-full shrink-0" style="background:var(--coral)"></span><span class="truncate">${esc(a.symbol)} · ${tfLabel(a.timeframe)}</span></span>
-      <span class="font-mono text-[11px] font-bold shrink-0 text-right leading-tight" style="color:var(--ink2)">${esc((a.ts || '').slice(11, 16))}<br><span class="ago" data-ts="${a.ts_ms || 0}" style="color:var(--violet-deep)"></span></span>
+      <span class="flex items-center gap-2 text-sm font-medium min-w-0"><span class="w-1.5 h-1.5 rounded-full flex-none" style="background:var(--sig-low)"></span><span class="truncate">${esc(a.symbol)} · ${tfLabel(a.timeframe)}</span></span>
+      <span class="num text-[11px] flex-none text-right leading-tight" style="color:var(--text-3)">${esc((a.ts || '').slice(11, 16))}<br><span class="ago" data-ts="${a.ts_ms || 0}"></span></span>
     </div>
-    <p class="sub text-xs mt-1 truncate">${esc(a.description)}</p>
-    <p class="font-mono text-xs font-bold tabular-nums mt-1" style="color:var(--ink2)">value <span style="color:var(--coral)">${fmt(a.value)}</span> · $${fmt(a.price)}</p>
+    <p class="sub text-xs mt-0.5 truncate">${esc(a.description)}</p>
+    <p class="num text-xs mt-1" style="color:var(--text-3)">value <span style="color:var(--sig-low)">${fmt(a.value)}</span> · $${fmt(a.price)}</p>
   </li>`;
 }
 function renderFeed() {
   const alerts = snap.alerts || [];
   el('feed-count').textContent = alerts.length;
-  el('dash-feed').innerHTML = alerts.slice(0, 8).map(feedItem).join('') ||
-    '<li class="sub text-center py-8">No alerts fired yet.</li>';
+  el('dash-feed').innerHTML = alerts.slice(0, 6).map(feedItem).join('') ||
+    '<li class="sub text-center py-6">No alerts fired yet.</li>';
 }
 function renderHistory() {
   const q = el('hist-search').value.trim().toUpperCase();
@@ -672,13 +1270,13 @@ function renderHistory() {
   for (const a of alerts) { const d = (a.ts || '').slice(0, 10); (groups[d] ??= []).push(a); }
   el('history-list').innerHTML = Object.entries(groups).map(([d, items]) => `
     <div>
-      <p class="text-xs font-black tracking-widest mb-2" style="color:#9A94BE">${d === today ? 'TODAY' : d}</p>
-      <ul class="flex flex-col gap-2.5">${items.map(feedItem).join('')}</ul>
+      <p class="label mb-1.5">${d === today ? 'Today' : d}</p>
+      <ul class="flex flex-col gap-1.5">${items.map(feedItem).join('')}</ul>
     </div>`).join('');
   el('history-empty').hidden = alerts.length > 0;
 }
 
-/* ================= insights charts (single-hue, direct-labeled) ================= */
+/* ================= insights charts ================= */
 function renderCharts() {
   const alerts = snap.alerts || [];
   const bySym = {};
@@ -687,19 +1285,19 @@ function renderCharts() {
   const max = (top[0] || [null, 1])[1];
   const cs = el('chart-symbols');
   cs.innerHTML = top.length ? top.map(([s, n]) => `
-    <div class="flex items-center gap-3 py-1.5" title="${esc(s)}: ${n} alert${n === 1 ? '' : 's'}">
-      <span class="font-mono text-xs font-bold w-12 text-right shrink-0" style="color:var(--ink2)">${esc(s)}</span>
-      <div class="bar-track flex-1"><div class="bar-fill" style="width:${Math.max(6, (n / max) * 100)}%"></div></div>
-      <span class="font-mono text-xs font-bold w-6 tabular-nums">${n}</span>
-    </div>`).join('') : '<p class="sub text-center py-8">No alert data yet — charts appear once alerts fire.</p>';
+    <div class="flex items-center gap-3 py-1" title="${esc(s)}: ${n} alert${n === 1 ? '' : 's'}">
+      <span class="num text-xs w-12 text-right flex-none" style="color:var(--text-2)">${esc(s)}</span>
+      <div class="bar-track flex-1"><div class="bar-fill" style="width:${Math.max(3, (n / max) * 100)}%"></div></div>
+      <span class="num text-xs w-6">${n}</span>
+    </div>`).join('') : '<p class="sub text-center py-6">No alert data yet — charts appear once alerts fire.</p>';
   cs.setAttribute('aria-label', top.length ? 'Bar chart, alerts by symbol: ' + top.map(([s, n]) => `${s} ${n}`).join(', ') : 'No alert data yet');
 
   const byHour = Array(24).fill(0);
   alerts.forEach((a) => { const h = parseInt((a.ts || '').slice(11, 13), 10); if (!isNaN(h)) byHour[h]++; });
   const hmax = Math.max(...byHour, 1);
   const ch = el('chart-hours');
-  ch.innerHTML = `<div class="flex items-end gap-[3px] h-24">${byHour.map((n, h) =>
-    `<div class="hour-col ${n ? '' : 'zero'}" style="height:${n ? Math.max(12, (n / hmax) * 100) : 4}%" title="${String(h).padStart(2, '0')}:00 — ${n} alert${n === 1 ? '' : 's'}"></div>`).join('')}</div>`;
+  ch.innerHTML = `<div class="flex items-end gap-[3px] h-20">${byHour.map((n, h) =>
+    `<div class="hour-col ${n ? '' : 'zero'}" style="height:${n ? Math.max(10, (n / hmax) * 100) : 3}%" title="${String(h).padStart(2, '0')}:00 — ${n} alert${n === 1 ? '' : 's'}"></div>`).join('')}</div>`;
   ch.setAttribute('aria-label', alerts.length ? 'Column chart, alerts by hour of day. Peak hour: ' + String(byHour.indexOf(Math.max(...byHour))).padStart(2, '0') + ':00.' : 'No alert data yet');
 }
 
@@ -719,37 +1317,36 @@ async function renderAiInsights() {
 
 /* ================= watchlist ================= */
 function rsiChip(rsi) {
-  if (rsi == null) return '<span class="chip chip-gray font-mono">—</span>';
-  const cls = rsi <= 30 ? 'chip-coral' : rsi >= 70 ? 'chip-mint' : 'chip-violet';
-  return `<span class="chip ${cls} font-mono">${rsi.toFixed(1)}</span>`;
+  if (rsi == null) return '<span class="chip chip-neutral num">—</span>';
+  const cls = rsi <= 30 ? 'chip-low' : rsi >= 70 ? 'chip-high' : 'chip-neutral';
+  return `<span class="chip ${cls} num">${rsi.toFixed(1)}</span>`;
 }
 function wlCard(w) {
-  const [bg, fg] = hueFor(w.symbol);
   return `
-  <div class="clay p-5">
-    <div class="flex items-center gap-3 mb-3">
-      <span class="w-11 h-11 rounded-2xl flex items-center justify-center font-mono text-xs font-bold shrink-0" style="background:${bg};color:${fg}">${esc(w.symbol)}</span>
-      <div class="min-w-0 flex-1"><p class="font-extrabold">${esc(w.symbol)}</p><p class="sub text-xs font-mono">${w.price != null ? '$' + fmt(w.price) : 'no data'}</p></div>
-      <button class="btn-soft" onclick="createFrom('${esc(w.symbol)}')">Alert</button>
+  <div class="card p-3">
+    <div class="flex items-center gap-2.5 mb-2.5">
+      <span class="sym" style="${symStyle(w.symbol)}">${esc(w.symbol)}</span>
+      <div class="min-w-0 flex-1"><p class="text-sm font-semibold">${esc(w.symbol)}</p><p class="sub num text-xs">${w.price != null ? '$' + fmt(w.price) : 'no data'}</p></div>
+      <button class="btn btn-quiet" onclick="createFrom('${esc(w.symbol)}')">Alert</button>
     </div>
-    <div class="flex flex-col gap-1.5">
+    <div class="flex flex-col gap-1">
       ${w.rows.map((r) => `<div class="flex items-center justify-between"><span class="sub text-xs">${tfLabel(r.timeframe)}</span>${rsiChip(r.rsi)}</div>`).join('')}
     </div>
   </div>`;
 }
 async function renderWatchlist() {
   const grid = el('watch-grid');
-  if (!grid.innerHTML) grid.innerHTML = '<div class="clay p-8 text-center sm:col-span-2 xl:col-span-3"><p class="sub">Loading live quotes…</p></div>';
+  if (!grid.innerHTML) grid.innerHTML = '<div class="card p-6 text-center sm:col-span-2 xl:col-span-3"><p class="sub">Loading live quotes…</p></div>';
   try {
     const data = await api('/api/watchlist');
     grid.innerHTML = data.map(wlCard).join('');
   } catch {
-    grid.innerHTML = '<div class="clay p-8 text-center sm:col-span-2 xl:col-span-3"><p class="sub">Couldn’t load the watchlist right now.</p></div>';
+    grid.innerHTML = '<div class="card p-6 text-center sm:col-span-2 xl:col-span-3"><p class="sub">Couldn’t load the watchlist right now.</p></div>';
   }
 }
 function createFrom(sym) {
   location.hash = '#/alerts';
-  setTimeout(() => { openModal(); el('f-symbol').value = sym; }, 0);
+  setTimeout(() => { openSheet(); el('f-symbol').value = sym; }, 0);
 }
 
 /* ================= backtest ================= */
@@ -764,16 +1361,16 @@ function btResults(r) {
   const rate = r.bars ? (r.fires / r.bars * 100) : 0;
   const events = (r.events || []).slice().reverse();
   return `
-    <h2 class="section-title mb-1">${esc(r.symbol)} · ${tfLabel(r.timeframe)}</h2>
-    <p class="sub mb-4">${esc(r.description)}</p>
-    <div class="grid grid-cols-3 gap-3 mb-4">
-      <div class="clay-sm p-3 text-center"><p class="font-mono text-2xl font-bold">${r.fires}</p><p class="sub text-xs">Fires</p></div>
-      <div class="clay-sm p-3 text-center"><p class="font-mono text-2xl font-bold">${r.bars}</p><p class="sub text-xs">Bars</p></div>
-      <div class="clay-sm p-3 text-center"><p class="font-mono text-2xl font-bold">${rate.toFixed(1)}%</p><p class="sub text-xs">Fire rate</p></div>
+    <h2 class="title">${esc(r.symbol)} · ${tfLabel(r.timeframe)}</h2>
+    <p class="sub mb-3">${esc(r.description)}</p>
+    <div class="grid grid-cols-3 gap-2 mb-3">
+      <div class="well p-2.5 text-center"><p class="stat-n">${r.fires}</p><p class="sub text-xs">Fires</p></div>
+      <div class="well p-2.5 text-center"><p class="stat-n">${r.bars}</p><p class="sub text-xs">Bars</p></div>
+      <div class="well p-2.5 text-center"><p class="stat-n">${rate.toFixed(1)}%</p><p class="sub text-xs">Fire rate</p></div>
     </div>
-    ${events.length ? `<p class="text-xs font-extrabold mb-2" style="color:var(--ink2)">RECENT FIRE POINTS</p>
-      <ul class="flex flex-col gap-2 max-h-64 overflow-y-auto">${events.map((ev) => `<li class="clay-sm p-2.5 flex items-center justify-between text-sm"><span class="font-mono sub">bar #${ev.index}</span><span class="font-mono font-bold">val ${fmt(ev.value)} · $${fmt(ev.price)}</span></li>`).join('')}</ul>`
-      : '<p class="sub text-center py-4">No fires in this window.</p>'}`;
+    ${events.length ? `<p class="label mb-1.5">Recent fire points</p>
+      <ul class="flex flex-col gap-1 max-h-64 overflow-y-auto">${events.map((ev) => `<li class="well p-2 flex items-center justify-between text-xs"><span class="num" style="color:var(--text-3)">bar #${ev.index}</span><span class="num">val ${fmt(ev.value)} · $${fmt(ev.price)}</span></li>`).join('')}</ul>`
+      : '<p class="sub text-center py-3">No fires in this window.</p>'}`;
 }
 async function runBacktest(e) {
   e.preventDefault();
@@ -781,17 +1378,17 @@ async function runBacktest(e) {
   el('bt-params').querySelectorAll('[data-p]').forEach((n) => { condition[n.dataset.p] = n.type === 'number' ? Number(n.value) : n.value; });
   const payload = { symbol: el('bt-symbol').value.trim().toUpperCase(), timeframe: el('bt-timeframe').value, condition };
   el('bt-error').hidden = true;
-  el('bt-results').innerHTML = '<div class="text-center py-10"><p class="sub">Running backtest…</p></div>';
+  el('bt-results').innerHTML = '<div class="text-center py-8"><p class="sub">Running backtest…</p></div>';
   try {
     const r = await api('/api/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     el('bt-results').innerHTML = btResults(r);
   } catch (err) {
-    el('bt-results').innerHTML = '<div class="text-center py-10"><p class="sub">Backtest didn’t run.</p></div>';
+    el('bt-results').innerHTML = '<div class="text-center py-8"><p class="sub">Backtest didn’t run.</p></div>';
     const p = el('bt-error'); p.textContent = 'Error: ' + err.message; p.hidden = false;
   }
 }
 
-/* ================= recipients + onboarding ================= */
+/* ================= recipients ================= */
 async function saveRecipients(e) {
   e.preventDefault();
   const emails = el('recip-input').value.split(',').map((s) => s.trim()).filter(Boolean);
@@ -800,34 +1397,195 @@ async function saveRecipients(e) {
     renderSettings(); toast('Recipients saved');
   } catch (err) { toast('Save failed: ' + err.message, false); }
 }
+
+/* ============================================================
+   SHEET — one spring in px drives both presentations.
+   y = 0 open, y = H closed. Mobile translates; desktop
+   materializes (scale + opacity) along the SAME value, so the
+   two layouts can never disagree about whether it is open.
+   ============================================================ */
+// Must stay equal to the sheet's -90px bottom inset / padding-bottom in CSS.
+const SHEET_GIVE = 90;
+const sheetEl = el('sheet'), scrimEl = el('sheet-scrim');
+let sheetH = 600, sheetOpen = false, lastFocus = null;
+const isSheetMode = () => matchMedia('(max-width: 767px)').matches;
+
+const sheetY = new Spring(9999, (y) => {
+  const t = 1 - Math.min(1, Math.max(0, y / sheetH));   // 0 closed → 1 open
+  // No clamp: a negative y is the rubber-banded over-drag and must be visible.
+  if (isSheetMode()) sheetEl.style.transform = `translateY(${y}px)`;
+  else sheetEl.style.transform = `translate(-50%, -50%) scale(${0.97 + 0.03 * t}) translateY(${y * 0.06}px)`;
+  sheetEl.style.opacity = isSheetMode() ? 1 : t;
+  scrimEl.style.opacity = t;
+}, { response: 0.3, epsilon: 0.5 });
+
+sheetY.onRest = () => {
+  if (sheetY.target > 0) {                 // finished closing
+    sheetEl.hidden = true; scrimEl.hidden = true;
+    if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+  }
+};
+
+function openSheet(rule = null) {
+  if (!META) { toast('Connecting to the API — try again in a moment', false); return; }
+  lastFocus = document.activeElement;
+  el('form-error').hidden = true;
+  el('ai-gen').hidden = !(META && META.ai_enabled);
+  el('ai-text').value = '';
+  el('ai-hint').textContent = 'AI drafts the fields below — review, then save. Runs on your machine.';
+  el('sheet-title').textContent = rule ? 'Edit Alert' : 'New Alert';
+  el('f-id').value = rule ? rule.id : '';
+  el('f-name').value = rule ? rule.name : '';
+  el('f-symbol').value = rule ? rule.symbol : '';
+  el('f-timeframe').value = rule ? rule.timeframe : META.timeframes[0].value;
+  const type = rule ? rule.condition.type : META.condition_types[0].type;
+  el('f-type').value = type;
+  buildParams(type, rule ? rule.condition : {});
+  el('f-enabled').checked = rule ? rule.enabled : true;
+
+  scrimEl.hidden = false; sheetEl.hidden = false;
+  // offsetHeight, not getBoundingClientRect: the latter reports the TRANSFORMED
+  // box, so measuring while the desktop scale-in is mid-flight under-reports it.
+  sheetH = Math.max(200, sheetEl.offsetHeight);
+  if (!sheetOpen) sheetY.set(sheetH);       // start from fully closed, then spring in
+  sheetOpen = true;
+  sheetY.to(0);
+  el('f-name').focus({ preventScroll: true });
+}
+function closeSheet(velocity) {
+  if (!sheetOpen) return;
+  sheetOpen = false;
+  sheetY.damping = velocity ? 0.9 : 1;
+  sheetY.to(sheetH, velocity);
+  sheetY.damping = 1;
+}
+// Rotating the phone or crossing the 768px breakpoint while the sheet is open
+// changes both its height and which transform formula onChange uses. Without a
+// re-measure the dismiss threshold keeps using the old height and the sheet
+// settles to the wrong place.
+addEventListener('resize', () => {
+  if (sheetEl.hidden) return;
+  sheetH = Math.max(200, sheetEl.offsetHeight);
+  if (!sheetOpen) sheetY.to(sheetH);
+  sheetY.onChange(sheetY.value);      // repaint with the current mode's formula
+});
+
+el('sheet-close').addEventListener('click', () => closeSheet());
+el('sheet-cancel').addEventListener('click', () => closeSheet());
+scrimEl.addEventListener('click', () => closeSheet());
+
+/* ---- sheet drag: 1:1 from the grab point, rubber-banded, projected ---- */
+(function sheetDrag() {
+  const scroller = el('sheet-scroll');
+  let id = null, y0 = 0, base = 0, axis = null;
+  const track = new Tracker();
+
+  sheetEl.addEventListener('pointerdown', (e) => {
+    if (!isSheetMode() || !sheetOpen) return;
+    const onGrab = e.target.closest('#sheet-grab, #sheet-head');
+    // Content can start a drag only at the top of its scroll — otherwise it scrolls.
+    if (!onGrab && !(scroller.contains(e.target) && scroller.scrollTop <= 0)) return;
+    if (e.target.closest('button, input, select, textarea, a')) return;
+    id = e.pointerId; y0 = e.clientY; axis = onGrab ? 'y' : null;
+    base = sheetY.seize();                 // grab the live on-screen value
+    track.reset(); track.push(e.clientY);
+  });
+
+  sheetEl.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== id) return;
+    const dy = e.clientY - y0;
+    if (!axis) {
+      if (Math.abs(dy) < 10) return;
+      if (dy < 0) { id = null; return; }   // upward at scroll-top means scroll, not drag
+      axis = 'y';
+      try { sheetEl.setPointerCapture(id); } catch {}
+    }
+    track.push(e.clientY);
+    let y = base + dy;
+    // Resist dragging above open. rubberband()'s asymptote IS its dimension, so
+    // passing SHEET_GIVE bounds the lift to exactly the 90px of material that
+    // extends below the viewport — the gap it would otherwise tear open is
+    // arithmetically impossible rather than merely unlikely.
+    if (y < 0) y = -rubberband(-y, SHEET_GIVE);
+    sheetY.set(y);
+    e.preventDefault();
+  }, { passive: false });
+
+  const end = (e) => {
+    if (e.pointerId !== id) return;
+    const dragged = axis === 'y';
+    id = null; axis = null;
+    if (!dragged) return;
+    const v = track.velocity();
+    const projected = sheetY.value + project(v);
+    // Velocity decides; position only breaks the tie on a slow release.
+    if (v > 350 || (v > -350 && projected > sheetH * 0.35)) closeSheet(v);
+    else { sheetOpen = true; sheetY.damping = 0.8; sheetY.to(0, v); sheetY.damping = 1; }
+  };
+  sheetEl.addEventListener('pointerup', end);
+  sheetEl.addEventListener('pointercancel', end);
+})();
+
+/* ---- focus trap: an aria-modal that leaks focus is a lie ---- */
+function trapFocus(container, e) {
+  const f = [...container.querySelectorAll('a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])')]
+    .filter((n) => n.offsetParent !== null || n === document.activeElement);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!el('onboard').hidden) return closeOnboard();
+    if (sheetOpen) return closeSheet();
+    if (openRow) return openRow._openRow(false);
+  }
+  if (e.key === 'Tab') {
+    if (!el('onboard').hidden) trapFocus(el('onboard'), e);
+    else if (sheetOpen) trapFocus(sheetEl, e);
+  }
+});
+
+/* ================= onboarding ================= */
 const OB_KEY = 'ar_onboarded';
 let obStep = 0;
+const obScrim = el('ob-scrim'), obEl = el('onboard');
+const obY = new Spring(9999, (y) => {
+  const t = 1 - Math.min(1, Math.max(0, y / 460));
+  if (isSheetMode()) obEl.style.transform = `translateY(${Math.max(0, y)}px)`;
+  else obEl.style.transform = `translate(-50%, -50%) scale(${0.97 + 0.03 * t})`;
+  obEl.style.opacity = isSheetMode() ? 1 : t;
+  obScrim.style.opacity = t;
+}, { response: 0.3, epsilon: 0.5 });
+obY.onRest = () => { if (obY.target > 0) { obEl.hidden = true; obScrim.hidden = true; } };
+
 function obCard(icon, title, body, actions) {
   return `<div class="text-center">
-    <div class="mx-auto w-16 h-16 rounded-3xl flex items-center justify-center mb-4" style="background:var(--violet-soft);color:var(--violet-deep)">${svg(icon, 'w-8 h-8')}</div>
-    <div class="flex justify-center gap-1.5 mb-4" aria-hidden="true">${[0, 1, 2].map((i) => `<span class="rounded-full" style="width:8px;height:8px;background:${i === obStep ? 'var(--violet-deep)' : 'var(--surface2)'}"></span>`).join('')}</div>
-    <h3 id="ob-title" class="text-xl font-black mb-2">${title}</h3>
-    <div class="sub mb-5">${body}</div>${actions}</div>`;
+    <div class="mx-auto w-11 h-11 rounded-xl flex items-center justify-center mb-3" style="background:var(--accent-soft);color:var(--accent)">${svg(icon, 'w-5 h-5')}</div>
+    <div class="flex justify-center gap-1.5 mb-3" aria-hidden="true">${[0, 1, 2].map((i) => `<span class="rounded-full" style="width:5px;height:5px;background:${i === obStep ? 'var(--accent)' : 'var(--line-2)'}"></span>`).join('')}</div>
+    <h3 id="ob-title" class="display mb-2">${title}</h3>
+    <div class="sub mb-4">${body}</div>${actions}</div>`;
 }
 function renderOnboard() {
   if (obStep === 0) {
     el('ob-body').innerHTML = obCard('activity', 'Welcome to Alert Radar',
       'Set rules on RSI, price, % change, or moving-average crosses. The moment one triggers, you get an email — instantly.',
-      `<button class="btn-primary w-full justify-center" onclick="obGo(1)">Get started</button>
-       <button class="btn-soft w-full justify-center mt-2" onclick="closeOnboard()">Skip</button>`);
+      `<button class="btn btn-primary w-full" onclick="obGo(1)">Get started</button>
+       <button class="btn btn-quiet w-full mt-2" onclick="closeOnboard()">Skip</button>`);
   } else if (obStep === 1) {
     const cur = ((settingsCache && settingsCache.email_recipients) || []).join(', ');
     el('ob-body').innerHTML = obCard('mail', 'Where should alerts go?',
       'Enter the email(s) that should receive alerts. Change this any time in Settings.',
       `<input id="ob-email" class="field text-center" placeholder="you@example.com" value="${esc(cur)}" />
-       <button class="btn-primary w-full justify-center mt-4" onclick="obSaveEmail()">Save &amp; continue</button>
-       <button class="btn-soft w-full justify-center mt-2" onclick="obGo(2)">Skip for now</button>`);
+       <button class="btn btn-primary w-full mt-3" onclick="obSaveEmail()">Save &amp; continue</button>
+       <button class="btn btn-quiet w-full mt-2" onclick="obGo(2)">Skip for now</button>`);
     setTimeout(() => { const i = el('ob-email'); if (i) i.focus(); }, 0);
   } else {
     el('ob-body').innerHTML = obCard('bell', 'You’re all set',
       'Your starter rules are already running. Create your own alert now, or explore the dashboard.',
-      `<button class="btn-primary w-full justify-center" onclick="closeOnboard(); location.hash='#/alerts'; openModal();">Create an alert</button>
-       <button class="btn-soft w-full justify-center mt-2" onclick="closeOnboard()">Explore first</button>`);
+      `<button class="btn btn-primary w-full" onclick="closeOnboard(); location.hash='#/alerts'; openSheet();">Create an alert</button>
+       <button class="btn btn-quiet w-full mt-2" onclick="closeOnboard()">Explore first</button>`);
   }
 }
 function obGo(s) { obStep = s; renderOnboard(); }
@@ -842,13 +1600,16 @@ async function obSaveEmail() {
 function openOnboard(force) {
   if (!force && localStorage.getItem(OB_KEY)) return;
   obStep = 0;
-  const o = el('onboard'); o.classList.remove('hidden'); o.classList.add('flex');
+  obScrim.hidden = false; obEl.hidden = false;
   renderOnboard();
+  obY.set(460); obY.to(0);
 }
 function closeOnboard() {
-  const o = el('onboard'); o.classList.add('hidden'); o.classList.remove('flex');
+  obY.to(460);
   localStorage.setItem(OB_KEY, '1');
 }
+obScrim.addEventListener('click', closeOnboard);
+
 function timeAgo(ms) {
   if (!ms) return '';
   let s = (Date.now() - ms) / 1000;
@@ -860,47 +1621,54 @@ function timeAgo(ms) {
 }
 function tickAgo() {
   document.querySelectorAll('.ago').forEach((n) => { n.textContent = timeAgo(Number(n.dataset.ts)); });
+  refreshLagTile();   // data age must tick between polls, not only on them
 }
 
 /* ================= settings ================= */
-const CHANNELS = [
-  { id: 'email', name: 'Email', icon: 'mail', desc: 'HTML alerts via Resend' },
-];
+const CHANNELS = [{ id: 'email', name: 'Email', icon: 'mail', desc: 'HTML alerts via Resend' }];
 function renderSettings() {
   const emailOn = !!(META && META.email_enabled);
   el('channel-cards').innerHTML = CHANNELS.map((c) => {
-    const live = emailOn;
-    // the amber badge is the only place the app says "email is not configured" —
+    // the accent badge is the only place the app says "email is not configured" —
     // alerts would otherwise fire, send nothing, and look perfectly healthy
-    const badge = live ? '<span class="chip chip-mint"><span class="dot"></span>Active</span>'
-      : '<span class="chip chip-amber">Add RESEND_API_KEY</span>';
+    const badge = emailOn ? '<span class="chip chip-high"><span class="dot"></span>Active</span>'
+      : '<span class="chip chip-accent">Add RESEND_API_KEY</span>';
     return `
-    <div class="clay-sm p-4 flex items-center gap-3 ${live ? '' : 'opacity-70'}">
-      <span class="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0" style="background:${live ? 'var(--violet-soft)' : '#ECEAF4'};color:${live ? 'var(--violet-deep)' : 'var(--ink2)'}">${svg(c.icon, 'w-5 h-5')}</span>
-      <div class="min-w-0 flex-1"><p class="font-extrabold">${c.name}</p><p class="sub text-xs">${c.desc}</p></div>
+    <div class="well p-3 flex items-center gap-3 ${emailOn ? '' : 'opacity-70'}">
+      <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface);color:var(--text-2)">${svg(c.icon)}</span>
+      <div class="min-w-0 flex-1"><p class="text-sm font-semibold">${c.name}</p><p class="sub text-xs">${c.desc}</p></div>
       ${badge}
     </div>`;
   }).join('');
   const dry = META && META.dry_run;
   el('mode-card').innerHTML = `
-    <h2 class="section-title mb-3">Notification mode</h2>
-    <div class="rounded-2xl p-4 flex gap-3 items-start" style="background:${dry ? 'var(--amber-soft)' : 'var(--mint-soft)'}">
-      <span style="color:${dry ? 'var(--amber)' : 'var(--mint)'}" class="mt-0.5 shrink-0">${svg(dry ? 'warn' : 'check', 'w-5 h-5')}</span>
+    <h2 class="title mb-2">Notification mode</h2>
+    <div class="p-3 flex gap-2.5 items-start" style="border-radius:var(--r-ctl);background:${dry ? 'var(--accent-soft)' : 'var(--sig-high-soft)'}">
+      <span style="color:${dry ? 'var(--accent)' : 'var(--sig-high)'}" class="mt-0.5 flex-none">${svg(dry ? 'warn' : 'check')}</span>
       <div>
-        <p class="font-extrabold" style="color:${dry ? 'var(--amber)' : 'var(--mint)'}">${dry ? 'Dry run — emails are logged, not sent' : 'Live email delivery enabled'}</p>
-        <p class="text-sm font-bold mt-1" style="color:${dry ? 'var(--amber)' : 'var(--mint)'}">${dry ? 'Set DRY_RUN=false in .env (with your Resend key) to go live.' : 'Alerts are delivered by email via Resend.'}</p>
+        <p class="text-sm font-semibold" style="color:${dry ? 'var(--accent)' : 'var(--sig-high)'}">${dry ? 'Dry run — emails are logged, not sent' : 'Live email delivery enabled'}</p>
+        <p class="sub mt-0.5">${dry ? 'Set DRY_RUN=false in .env (with your Resend key) to go live.' : 'Alerts are delivered by email via Resend.'}</p>
       </div>
     </div>
-    <p class="sub mt-3">Emails send to your saved recipients (set above).</p>`;
-  el('set-timeframes').innerHTML = (META ? META.timeframes : []).map((t) => `<span class="chip chip-violet">${t.label}</span>`).join('');
+    <p class="sub mt-2">Emails send to your saved recipients (set above).</p>`;
+  // Read from /api/meta — the old copy asserted "Massive … every 30s", and both
+  // halves were wrong after the Alpaca and scheduler migrations.
+  const prov = (META && META.data_provider) || '';
+  el('src-name').textContent = prov === 'massive' ? 'Massive' : prov === 'alpaca' ? 'Alpaca' : (prov || 'Not configured');
+  el('src-desc').textContent = prov === 'alpaca'
+    ? `Real-time ${(META.data_feed || 'iex').toUpperCase()} bars via Alpaca. Rules evaluate on closed bars during market hours (9:30–16:00 ET, Mon–Fri, excluding NYSE holidays; 13:00 close on half-days).`
+    : prov === 'massive'
+      ? 'Bars via Massive (formerly Polygon.io). Note: the free Massive tier is end-of-day only — during a live session this evaluates stale prices.'
+      : 'No market data provider configured.';
+  el('set-timeframes').innerHTML = (META ? META.timeframes : []).map((t) => `<span class="chip chip-neutral">${t.label}</span>`).join('');
   // signed out / no auth configured (local dev) → render nothing rather than an empty shell
   el('account-card').innerHTML = (META && META.user)
-    ? `<h2 class="section-title mb-3">Account</h2>
+    ? `<h2 class="title mb-2">Account</h2>
        <div class="flex items-center gap-3">
-         <span class="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0" style="background:var(--violet-soft);color:var(--violet-deep)">${svg('users', 'w-5 h-5')}</span>
-         <div class="min-w-0 flex-1"><p class="font-extrabold truncate">${esc(META.user)}</p><p class="sub text-xs">Your rules and alerts are private to this account.</p></div>
+         <span class="w-9 h-9 rounded-lg flex items-center justify-center flex-none" style="background:var(--surface-2);color:var(--text-2)">${svg('users')}</span>
+         <div class="min-w-0 flex-1"><p class="text-sm font-semibold truncate">${esc(META.user)}</p><p class="sub">Your rules and alerts are private to this account.</p></div>
        </div>
-       <button type="button" class="btn-soft mt-4" onclick="signOut()">Sign out</button>`
+       <button type="button" class="btn btn-quiet mt-3" onclick="signOut()">Sign out</button>`
     : '';
   const recips = (settingsCache && settingsCache.email_recipients) || [];
   el('recip-input').value = recips.join(', ');
@@ -914,55 +1682,38 @@ async function signOut() {
   location.reload();  // an unauthenticated GET / serves the sign-in page
 }
 
-/* ================= modal ================= */
-let lastFocus = null;
+/* ================= form params ================= */
 function buildParams(type, values = {}, container = 'f-params') {
   const spec = META.condition_types.find((c) => c.type === type);
   el(container).innerHTML = spec.params.map((p) => {
     const val = values[p.name] !== undefined ? values[p.name] : p.default;
     const inner = p.type === 'select'
-      ? `<select data-p="${p.name}" class="field mt-1.5">${p.options.map((o) => `<option ${o === val ? 'selected' : ''}>${o}</option>`).join('')}</select>`
-      : `<input data-p="${p.name}" type="number" step="any" value="${val}" class="field mt-1.5 font-mono" />`;
-    return `<label class="text-xs font-extrabold uppercase" style="color:var(--ink2)">${p.name}${inner}</label>`;
+      ? `<select data-p="${p.name}" class="field mt-1">${p.options.map((o) => `<option ${o === val ? 'selected' : ''}>${o}</option>`).join('')}</select>`
+      : `<input data-p="${p.name}" type="number" step="any" value="${val}" class="field mt-1 mono" />`;
+    return `<label class="label">${p.name}${inner}</label>`;
   }).join('');
-}
-function openModal(rule = null) {
-  if (!META) { toast('Connecting to the API — try again in a moment', false); return; }
-  lastFocus = document.activeElement;
-  el('form-error').hidden = true;
-  el('ai-gen').hidden = !(META && META.ai_enabled);
-  el('ai-text').value = '';
-  el('ai-hint').textContent = 'AI drafts the fields below — review, then save. Runs on your machine.';
-  el('modal-title').textContent = rule ? 'Edit Alert' : 'New Alert';
-  el('f-id').value = rule ? rule.id : '';
-  el('f-name').value = rule ? rule.name : '';
-  el('f-symbol').value = rule ? rule.symbol : '';
-  el('f-timeframe').value = rule ? rule.timeframe : META.timeframes[0].value;
-  const type = rule ? rule.condition.type : META.condition_types[0].type;
-  el('f-type').value = type;
-  buildParams(type, rule ? rule.condition : {});
-  el('f-enabled').checked = rule ? rule.enabled : true;
-  const m = el('modal'); m.classList.remove('hidden'); m.classList.add('flex');
-  el('f-name').focus();
-}
-function closeModal() {
-  const m = el('modal'); m.classList.add('hidden'); m.classList.remove('flex');
-  if (lastFocus) lastFocus.focus();
 }
 
 /* ================= actions ================= */
 document.addEventListener('click', (e) => {
+  const face = e.target.closest('.row-face');
+  if (face) {
+    const rule = face.parentElement._rule;
+    if (rule) openSheet(rule);
+    return;
+  }
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
-  const rule = rulesCache.find((r) => r.id === btn.dataset.id);
+  const row = btn.closest('.row');
+  const rule = row && row._rule;
   if (!rule) return;
-  if (btn.dataset.act === 'edit') openModal(rule);
-  else if (btn.dataset.act === 'delete') {
+  if (btn.dataset.act === 'delete') {
     if (confirm(`Delete "${rule.name}"? This cannot be undone.`))
       api(`/api/rules/${rule.id}`, { method: 'DELETE' })
         .then(() => refreshRules('Alert deleted'))
         .catch((err) => toast('Delete failed: ' + err.message, false));
   } else if (btn.dataset.act === 'toggle') {
+    row._openRow(false);
     // explicit field list: the API rejects unknown keys, and `rule` carries the
     // server-owned id/created_at it was read with
     api(`/api/rules/${rule.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -973,11 +1724,7 @@ document.addEventListener('click', (e) => {
   }
 });
 el('f-type').addEventListener('change', (e) => buildParams(e.target.value));
-el('new-btn').addEventListener('click', () => openModal());
-el('modal-close').addEventListener('click', closeModal);
-el('modal-cancel').addEventListener('click', closeModal);
-el('modal').addEventListener('click', (e) => { if (e.target === el('modal')) closeModal(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el('modal').classList.contains('hidden')) closeModal(); });
+el('new-btn').addEventListener('click', () => openSheet());
 el('rule-search').addEventListener('input', renderAlertsGrid);
 el('rule-type-filter').addEventListener('change', renderAlertsGrid);
 el('hist-search').addEventListener('input', renderHistory);
@@ -1025,7 +1772,7 @@ el('rule-form').addEventListener('submit', async (e) => {
   try {
     await api(id ? `/api/rules/${id}` : '/api/rules',
       { method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    closeModal();
+    closeSheet();
     refreshRules(id ? 'Alert updated' : 'Alert created');
   } catch (err) {
     const p = el('form-error'); p.textContent = 'Error: ' + err.message; p.hidden = false;
@@ -1043,8 +1790,9 @@ async function refreshRules(msg) {
 }
 function updatePills() {
   const dot = el('market-dot'), text = el('market-text'), pill = el('market-pill');
-  if (snap.market_open) { pill.className = 'chip chip-mint'; dot.className = 'dot live-dot'; text.textContent = 'Market Open'; }
-  else { pill.className = 'chip chip-amber'; dot.className = 'dot'; text.textContent = 'Market Closed'; }
+  if (snap.market_open) { pill.className = 'chip chip-high'; text.textContent = 'Market Open'; }
+  else { pill.className = 'chip chip-neutral'; text.textContent = 'Market Closed'; }
+  dot.className = 'dot';
   el('health-chip').hidden = snap.healthy !== false;  // dead-man's switch surfaced
 }
 async function poll() {
@@ -1063,23 +1811,27 @@ async function poll() {
 
 /* ================= init ================= */
 (function initStaticIcons() {
-  el('brand-mark').innerHTML = svg('activity', 'w-6 h-6');
-  el('brand-mark-m').innerHTML = svg('activity', 'w-5 h-5');
-  el('new-btn-icon').innerHTML = svg('plus', 'w-4 h-4');
-  el('modal-close').innerHTML = svg('x', 'w-5 h-5');
-  el('search-icon').innerHTML = svg('search', 'w-4 h-4');
-  el('hist-search-icon').innerHTML = svg('search', 'w-4 h-4');
-  el('alerts-empty-icon').innerHTML = svg('bell', 'w-7 h-7');
-  el('history-empty-icon').innerHTML = svg('clock', 'w-7 h-7');
-  el('bt-icon').innerHTML = svg('flask', 'w-6 h-6');
-  el('ai-spark').innerHTML = svg('sparkles', 'w-3.5 h-3.5');
-  el('ai-insights-icon').innerHTML = svg('sparkles', 'w-5 h-5');
-  el('side-docs').innerHTML = `${svg('book', 'w-4 h-4')}<a href="/docs" target="_blank" rel="noopener" class="hover:underline">API reference</a>`;
-  el('side-github').innerHTML = `${svg('github', 'w-4 h-4')}<a href="https://github.com/siroxou" target="_blank" rel="noopener" class="hover:underline">github.com/siroxou</a>`;
-  document.querySelectorAll('[data-icon]').forEach((n) => { n.innerHTML = svg(n.dataset.icon, 'w-6 h-6'); });
+  el('brand-mark').innerHTML = svg('activity');
+  el('brand-mark-m').innerHTML = svg('activity');
+  el('nav-toggle').innerHTML = svg('panel');
+  el('new-btn-icon').innerHTML = svg('plus');
+  el('sheet-close').innerHTML = svg('x');
+  el('search-icon').innerHTML = svg('search', 'w-3.5 h-3.5');
+  el('hist-search-icon').innerHTML = svg('search', 'w-3.5 h-3.5');
+  el('alerts-empty-icon').innerHTML = svg('bell', 'w-5 h-5');
+  el('history-empty-icon').innerHTML = svg('clock', 'w-5 h-5');
+  el('bt-icon').innerHTML = svg('flask', 'w-5 h-5');
+  el('ai-spark').innerHTML = svg('sparkles', 'w-3 h-3');
+  el('ai-insights-icon').innerHTML = svg('sparkles');
+  el('side-docs').innerHTML = `${svg('book', 'w-3.5 h-3.5')}<a href="/docs" target="_blank" rel="noopener" class="hover:underline">API reference</a>`;
+  el('side-github').innerHTML = `${svg('github', 'w-3.5 h-3.5')}<a href="https://github.com/siroxou" target="_blank" rel="noopener" class="hover:underline">github.com/siroxou</a>`;
+  document.querySelectorAll('[data-icon]').forEach((n) => { n.innerHTML = svg(n.dataset.icon, 'w-4 h-4'); });
 })();
 renderNav();
 route();
+syncTheme();
+syncNavToggle();
+
 async function loadEverything() {
   META = await api('/api/meta');
   el('dry-chip').hidden = !META.dry_run;
@@ -1100,7 +1852,7 @@ async function loadEverything() {
     await loadEverything();
     if (!location.search.includes('noboard')) openOnboard(false);
     const _compose = new URLSearchParams(location.search).get('compose');  // deep-link: open + AI-draft an alert
-    if (_compose && META && META.ai_enabled) { openModal(); el('ai-text').value = _compose; el('ai-generate').click(); }
+    if (_compose && META && META.ai_enabled) { openSheet(); el('ai-text').value = _compose; el('ai-generate').click(); }
   } catch (e) {
     toast('Cannot reach the API — retrying…', false);
   }
