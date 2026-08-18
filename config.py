@@ -92,6 +92,35 @@ REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", 30))
 # fetches can easily outrun a 30s budget, and cron precision is not exact.
 DEADMAN_SECONDS = int(os.environ.get("DEADMAN_SECONDS", 900 if SERVERLESS else max(300, REFRESH_SECONDS * 6)))
 
+# --- Latency: boundary-aligned evaluation ---------------------------------
+# Rules only ever see CLOSED bars, so evaluating at any moment other than just
+# after a bar boundary is wasted work — nothing can have changed. A cron landing
+# at an arbitrary offset can miss a boundary by nearly a full interval even though
+# the data was ready seconds after it. So: sleep until just after the next
+# boundary, then evaluate once.
+BOUNDARY_ALIGN = _env_bool("BOUNDARY_ALIGN", True)
+# How long after a bar closes before the provider actually serves it. The ~15s in
+# alpaca_client's docstring is an unmeasured assertion — measure before trusting
+# it (scripts/measure_publish_lag.py) and set this from data.
+BAR_PUBLISH_LAG_SECONDS = int(os.environ.get("BAR_PUBLISH_LAG_SECONDS", 18))
+# Never hold an invocation open longer than this waiting for a boundary. Guards
+# both the function's 60s ceiling and the free-tier budget.
+MAX_ALIGN_SLEEP_SECONDS = int(os.environ.get("MAX_ALIGN_SLEEP_SECONDS", 40))
+# The bar closing AT 16:00 only becomes fetchable seconds later, when the market
+# gate has already flipped shut — so without a grace window the last bar of every
+# session can never fire. Evaluation only; the dashboard pill stays strict.
+CLOSE_GRACE_SECONDS = int(os.environ.get("CLOSE_GRACE_SECONDS", 120))
+
+# --- Alerting behaviour ----------------------------------------------------
+# A rule latches on the False->True edge and, without this, stays silent for as
+# long as the condition holds — RSI parked below 15 for three days alerts once.
+# Re-fire at most this often while it remains true. 0 restores edge-only firing.
+RULE_COOLDOWN_MINUTES = int(os.environ.get("RULE_COOLDOWN_MINUTES", 30))
+# Delivery outbox bounds: an alert whose email keeps failing must eventually stop
+# being retried rather than wedging every later cycle behind it.
+DELIVERY_MAX_ATTEMPTS = int(os.environ.get("DELIVERY_MAX_ATTEMPTS", 5))
+DELIVERY_MAX_AGE_MINUTES = int(os.environ.get("DELIVERY_MAX_AGE_MINUTES", 120))
+
 # --- Market universe used to seed starter rules / demo (rules can use any symbol) ---
 SYMBOLS = ["AAPL", "NVDA", "AMZN", "IWM", "QQQ", "SPY"]
 
@@ -101,6 +130,13 @@ TIMEFRAMES = {
     "5min": (5, "minute", "5-Minute", 7),
     "15min": (15, "minute", "15-Minute", 14),
     "1hour": (1, "hour", "1-Hour", 40),
+}
+
+# Derived, not a second hand-maintained table: bar length in whole minutes, used to
+# work out when a bar actually closes. stream.py keeps its own copy for the resident
+# path; this is the one the evaluation scheduler reads.
+TIMEFRAME_MINUTES = {
+    k: mult * (60 if span == "hour" else 1) for k, (mult, span, _disp, _lb) in TIMEFRAMES.items()
 }
 
 RSI_PERIOD = 14

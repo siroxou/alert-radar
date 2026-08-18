@@ -1003,10 +1003,12 @@ const tfSeconds = (v) => {                       // "15min" -> 900, "1hour" -> 3
   const m = /^(\d+)\s*(min|hour)/.exec(v || '');
   return m ? Number(m[1]) * (m[2] === 'hour' ? 3600 : 60) : 0;
 };
-// Everything downstream of the bar close: Alpaca publish lag (~15s, provider
-// side) + average wait for the next scheduler ping (~30s on a 1-min cron) +
-// cycle execution (~2s). An estimate, and deliberately the small term.
-const LAG_OVERHEAD_S = 47;
+// Everything downstream of the bar close: provider publish lag (~18s) + cycle
+// execution (~2s). The scheduler wait used to dominate this term (~30s on average,
+// because a 1-min cron lands at an arbitrary offset and can miss a boundary by
+// nearly a full interval). Evaluation is now aligned to the bar close itself, so
+// that wait is gone. Still an estimate — and deliberately the small term.
+const LAG_OVERHEAD_S = 20;
 function typicalLagSeconds() {
   const tf = rulesCache.filter((r) => r.enabled).map((r) => tfSeconds(r.timeframe)).filter(Boolean);
   if (!tf.length) return null;
@@ -1035,7 +1037,8 @@ function refreshLagTile() {
       + `Most of it is waiting for the bar to close — rules are evaluated on closed bars only, `
       + `so a move is invisible until its bar ends (on average half the timeframe).\n`
       + `Your enabled rules use: ${tfs.join(', ')}.\n\n`
-      + `The remaining ~${LAG_OVERHEAD_S}s is data publish lag, the scheduler interval, and the cycle itself. `
+      + `The remaining ~${LAG_OVERHEAD_S}s is the provider's publish lag plus the cycle itself — `
+      + `evaluation is aligned to the bar close, so there is no scheduler wait on top. `
       + `Outside market hours, alerts wait for the next open.`;
   const age = dataAgeSeconds();
   const dead = snap.deadman_seconds && age != null && age > snap.deadman_seconds;

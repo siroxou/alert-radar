@@ -10,6 +10,7 @@ import logging
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -112,12 +113,61 @@ def market_close_time(d):
     return EARLY_CLOSE if d in early_close_days(d.year) else MARKET_CLOSE
 
 
-def market_is_open(now=None):
+def market_is_open(now=None, grace_seconds=0):
+    """Is the market open right now?
+
+    `grace_seconds` extends the close ONLY for evaluation. The bar that closes at
+    16:00 is not fetchable until seconds later, by which time a strict gate has
+    already flipped shut — so without a grace window the final bar of every session
+    (15:45-16:00, 15:00-16:00) can never fire. The dashboard's Open/Closed pill
+    calls this with grace 0 and stays truthful.
+    """
     now = now or datetime.now(ET)
     d = now.date()
     if d.weekday() >= 5 or d in market_holidays(d.year):
         return False
-    return MARKET_OPEN <= now.time() <= market_close_time(d)
+    close = market_close_time(d)
+    if grace_seconds:
+        close = (datetime.combine(d, close) + timedelta(seconds=grace_seconds)).time()
+    return MARKET_OPEN <= now.time() <= close
+
+
+def next_boundary(timeframes, now=None):
+    """The next clock-aligned bar close across `timeframes`, in ET.
+
+    Every timeframe divides the hour (1/5/15/60 min), so a boundary is simply the
+    next instant where minutes-since-midnight is a multiple of the smallest one.
+    Used to evaluate just after a bar actually closes rather than at whatever
+    arbitrary offset the cron happened to land on.
+    """
+    now = now or datetime.now(ET)
+    step = bar_step_minutes(timeframes)
+    if step is None:
+        return None
+    floor = now.replace(second=0, microsecond=0)
+    elapsed = floor.hour * 60 + floor.minute
+    return floor + timedelta(minutes=step - (elapsed % step))
+
+
+def bar_step_minutes(timeframes):
+    """Shortest bar length in `timeframes`, in minutes — or None if none are known."""
+    minutes = [config.TIMEFRAME_MINUTES[tf] for tf in timeframes if tf in config.TIMEFRAME_MINUTES]
+    return min(minutes) if minutes else None
+
+
+def previous_boundary(timeframes, now=None):
+    """The most recent bar close at or before `now`.
+
+    This is the one that matters for scheduling. A ping landing at 10:00:04 should
+    wait ~14s for the 10:00 bar to publish — not skip ahead to 10:15. Waiting for a
+    FUTURE boundary would add a whole interval of latency to this invocation for
+    nothing, since the next ping handles the next bar.
+    """
+    now = now or datetime.now(ET)
+    step = bar_step_minutes(timeframes)
+    if step is None:
+        return None
+    return next_boundary(timeframes, now) - timedelta(minutes=step)
 
 
 def now_et():
@@ -148,18 +198,31 @@ def run_cycle(series_provider=None):
     distinction would fetch 24/7 on a paid key and email MONITOR DOWN every
     weekend and holiday.
     """
-    if DEMO or market_is_open():
+    if DEMO or market_is_open(grace_seconds=config.CLOSE_GRACE_SECONDS):
         run_once(series_provider)
     else:
         rows = [_row(r, conditions.describe(r["condition"]), None, False)
                 for r in db.all_enabled_rules()]
         db.mark_success()
         _publish_snapshots(rows)
+        # Off-hours is the cheap moment to sweep spent boundary claims.
+        try:
+            db.prune_cycle_claims(int(time.time() // 60) - 1440)
+        except Exception:
+            logger.exception("pruning cycle claims failed")
         logger.info("market closed, idling")
     _check_deadman()
 
 
 def run_once(series_provider=None):
+    # One borrowed connection for the whole cycle instead of one handshake per db
+    # call (N+F+Uf+U+4 of them, each a TLS+auth round trip through the pooler).
+    # Commit boundaries are unchanged — every write still commits in its own block.
+    with db.session():
+        _run_once(series_provider)
+
+
+def _run_once(series_provider=None):
     provider = _provider(series_provider)  # honours DEMO, so no path reaches the live API in demo mode
     rules = db.all_enabled_rules()
     # ONE flat loop over every user's rules, not a per-user outer loop: `cache` is
@@ -168,7 +231,8 @@ def run_once(series_provider=None):
     # ponytail: unbounded fetches per cycle. A global ceiling here is the upgrade
     # path if signups ever outpace the market-data budget.
     cache = {}  # (symbol,timeframe) -> series, so each pair is fetched once per cycle
-    rows, fires = [], {}  # fires: user_id -> [(rule, desc, value, price)]
+    _prefetch(provider, rules, cache)
+    rows, fires = [], {}  # fires: user_id -> [(rule, desc, value, price, alert_id)]
     for rule in rules:
         key = (rule["symbol"], rule["timeframe"])
         try:
@@ -180,23 +244,23 @@ def run_once(series_provider=None):
             desc = conditions.describe(rule["condition"])
             if db.record_transition(rule["id"], fired, value):
                 # history before delivery: if the process is killed mid-cycle the
-                # alert is still recorded, rather than latched fired with no trace
-                db.append_alert(rule, desc, value, price)
-                fires.setdefault(rule["user_id"], []).append((rule, desc, value, price))
+                # alert is still recorded, rather than latched fired with no trace.
+                # It lands as sent=0, so a cycle killed before delivery leaves the
+                # email queued for the next one instead of losing it.
+                alert_id = db.append_alert(rule, desc, value, price)
+                fires.setdefault(rule["user_id"], []).append((rule, desc, value, price, alert_id))
                 logger.info("ALERT: %s [%s] value=%.2f price=%.2f", rule["name"], desc, value, price)
             rows.append(_row(rule, desc, value, fired))
         except Exception:
             logger.exception("error evaluating rule %s (%s)", rule.get("id"), rule.get("name"))
             rows.append(_row(rule, "error", None, False, error=True))
-    for uid, user_fires in fires.items():
-        # one batched request per user, not one per rule: a correlated selloff fires
-        # many rules at once, and per-rule POSTs hit Resend's rate limit and the
-        # function's wall clock together. try/except INSIDE the loop, so one user's
-        # delivery failure cannot swallow everyone queued behind them.
-        try:
-            notifier.send_batch(user_fires, now_et(), db.user_recipients(uid))
-        except Exception:
-            logger.exception("alert delivery failed for user %s (%d rule(s))", uid, len(user_fires))
+    # Alerts stranded by an earlier cycle ride out with this one's, so a user gets a
+    # single batch rather than one per stranded alert.
+    for uid, pending in _retry_unsent().items():
+        fires.setdefault(uid, [])
+        have = {f[4] for f in fires[uid]}
+        fires[uid] = [p for p in pending if p[4] not in have] + fires[uid]
+    _deliver(fires)
     global _last_error
     ok = (not rows) or any(not r.get("error") for r in rows)
     if ok:
@@ -204,6 +268,80 @@ def run_once(series_provider=None):
     elif rows:
         _last_error = "all rules failed to evaluate (market data unavailable?)"
     _publish_snapshots(rows)
+
+
+def _prefetch(provider, rules, cache):
+    """Warm `cache` with every distinct (symbol, timeframe) concurrently.
+
+    Only for the live REST provider. demo_series mutates module globals and
+    advances one synthetic bar per call, so it must stay sequential — and the
+    stream provider is a pure memory read that gains nothing from a thread pool.
+    Failures are left for the rule loop to hit and report per-rule, exactly as
+    before; this only changes WHEN the fetch happens, never whether it is retried.
+    """
+    if provider is not _fetch_series:
+        return
+    pairs = {(r["symbol"], r["timeframe"]) for r in rules}
+    if len(pairs) < 2:
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(pairs))) as pool:
+        futures = {pool.submit(provider, *p): p for p in pairs}
+        for fut in futures:
+            try:
+                cache[futures[fut]] = fut.result()
+            except Exception:
+                pass  # the rule loop re-raises it per rule and records an error row
+
+
+def _deliver(fires):
+    """Send each user's batch and mark those alerts delivered.
+
+    One batched request per user, not one per rule: a correlated selloff trips many
+    rules at once, and per-rule POSTs hit Resend's rate limit and the function's
+    wall clock together. try/except INSIDE the loop, so one user's delivery failure
+    cannot swallow everyone queued behind them.
+
+    Delivery is at-least-once. The alert row is marked sent only AFTER the POST
+    returns, so if the POST succeeds and the process dies before the mark, the next
+    cycle sends it again. A duplicate email is strictly better than a silent loss,
+    which is what the previous fire-and-forget shape produced on every 60s timeout.
+    """
+    for uid, user_fires in fires.items():
+        ids = [f[4] for f in user_fires if f[4] is not None]
+        try:
+            notifier.send_batch([f[:4] for f in user_fires], now_et(), db.user_recipients(uid))
+            db.mark_alerts_sent(ids)
+        except Exception:
+            db.bump_attempts(ids)
+            logger.exception("alert delivery failed for user %s (%d rule(s))", uid, len(user_fires))
+
+
+def _retry_unsent():
+    """Re-queue alerts written by an earlier cycle that never got their email.
+
+    Covers both loss paths: a cycle killed at the function's 60s ceiling after the
+    row was written, and a Resend call that raised. Bounded by attempts and age in
+    db.unsent_alerts so a permanently failing alert stops rather than wedging every
+    later cycle behind it.
+    """
+    try:
+        pending = db.unsent_alerts()
+    except Exception:
+        logger.exception("could not read the delivery outbox")
+        return {}
+    if not pending:
+        return {}
+    logger.info("retrying %d undelivered alert(s)", len(pending))
+    out = {}
+    for a in pending:
+        # send_batch only reads symbol/timeframe/name off the rule, so the alert row
+        # itself carries everything the email needs — no rules lookup, and it still
+        # works for an alert whose rule has since been deleted.
+        rule = {"symbol": a["symbol"], "timeframe": a["timeframe"], "name": a["name"],
+                "id": a["rule_id"], "user_id": a["user_id"]}
+        out.setdefault(a["user_id"], []).append(
+            (rule, a["description"], a["value"], a["price"], a["id"]))
+    return out
 
 
 def _row(rule, desc, value, fired, error=False):

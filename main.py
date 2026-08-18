@@ -11,6 +11,7 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from urllib.parse import quote
 
@@ -453,8 +454,55 @@ def cron_evaluate(request: Request):
     header = request.headers.get("authorization", "")
     if not (header.startswith("Bearer ") and hmac.compare_digest(header[7:], config.CRON_SECRET)):
         raise HTTPException(status_code=401, detail="Not authenticated")
+    started = time.monotonic()
+    aligned_to = _align_to_boundary()
     engine.run_cycle()
-    return {"ok": True, "market_open": engine.market_is_open(), "at": engine.now_et()}
+    return {"ok": True, "market_open": engine.market_is_open(), "at": engine.now_et(),
+            "aligned_to": aligned_to, "took_ms": int((time.monotonic() - started) * 1000)}
+
+
+def _align_to_boundary():
+    """Sleep until just after the next bar close, when new data can actually exist.
+
+    Rules only ever see CLOSED bars, so evaluating at an arbitrary offset is wasted
+    work — and worse, a ping landing seconds BEFORE a boundary reads the stale bar
+    and the next one is a full interval away. Waiting the few seconds for the
+    boundary turns "up to a whole interval late" into "publish lag plus a cycle".
+
+    Returns the ISO boundary it waited for, or None if it did not wait.
+    """
+    if not config.BOUNDARY_ALIGN or engine.DEMO:
+        return None
+    try:
+        # One extra lightweight read before the cycle. It pays for itself: aligning
+        # to the rules' ACTUAL timeframes is what lets ~14 of every 15 pings skip
+        # sleeping entirely when all rules are 15min. Aligning to the shortest
+        # configured timeframe instead would need no query and sleep every minute.
+        timeframes = {r["timeframe"] for r in db.all_enabled_rules()}
+        boundary = engine.previous_boundary(timeframes)
+        if boundary is None:
+            return None
+        # The bar that JUST closed is the one worth waiting for — a ping at 10:00:04
+        # is 14s from the 10:00 bar publishing. Waiting for the NEXT boundary instead
+        # would add a whole interval to this invocation for nothing; the next ping
+        # covers that bar.
+        ready = boundary + timedelta(seconds=config.BAR_PUBLISH_LAG_SECONDS)
+        wait = (ready - datetime.now(engine.ET)).total_seconds()
+        # Already published (evaluate now, the data is fresh), or further off than we
+        # will hold the invocation open for.
+        if wait <= 0 or wait > config.MAX_ALIGN_SLEEP_SECONDS:
+            return None
+        # One evaluation per boundary: overlapping pings would otherwise both wake
+        # up and duplicate every market-data fetch. The edge claim already prevents
+        # duplicate EMAILS; this prevents duplicate WORK.
+        if not db.claim_once(f"cycle:{int(boundary.timestamp() // 60)}"):
+            return None
+        logger.info("aligning: sleeping %.1fs for the %s bar close", wait, boundary.strftime("%H:%M"))
+        time.sleep(wait)
+        return boundary.isoformat()
+    except Exception:
+        logger.exception("boundary alignment failed; evaluating immediately")
+        return None
 
 
 @app.post("/api/ai/parse-rule")

@@ -4,7 +4,8 @@ Run: python test_all.py   (no framework, no network — uses a temp SQLite db + 
 """
 import sys
 import tempfile
-from datetime import date, datetime
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -294,6 +295,11 @@ def test_engine_cycle():
     # per-user delivery assertions below
     for r in db.all_enabled_rules():
         db.delete_rule(r["id"], r["user_id"])
+    # …and for the same reason, drain the delivery outbox: alerts other tests wrote
+    # directly are legitimately undelivered, so a cycle now retries them and their
+    # batches would land in the per-user assertions below.
+    db.mark_alerts_sent([a["id"] for a in db.unsent_alerts(max_attempts=1 << 30,
+                                                           max_age_minutes=1 << 30)])
     # rules that always fire (price below a huge level) → tests fire-once + snapshot.
     # Both users watch the SAME symbol×timeframe, which is what makes the cache
     # assertion below meaningful.
@@ -542,12 +548,170 @@ def test_ai():
     print("  ✓ ai OK (parse_rule validates, summary returns text, fails open)")
 
 
+def test_boundary_alignment():
+    print("Testing engine.next_boundary (bar-close alignment)...")
+    et = engine.ET
+    at = lambda h, m, s=0: datetime(2026, 8, 17, h, m, s, tzinfo=et)
+
+    # the next close for each timeframe, from a moment mid-bar
+    assert engine.next_boundary({"1min"}, at(10, 7, 30)) == at(10, 8)
+    assert engine.next_boundary({"5min"}, at(10, 7, 30)) == at(10, 10)
+    assert engine.next_boundary({"15min"}, at(10, 7, 30)) == at(10, 15)
+    assert engine.next_boundary({"1hour"}, at(10, 7, 30)) == at(11, 0)
+
+    # mixed timeframes align to the SHORTEST — the 5min bar closes first, and a
+    # cycle evaluates every rule at once anyway
+    assert engine.next_boundary({"15min", "5min"}, at(10, 7, 30)) == at(10, 10)
+
+    # exactly ON a boundary means that bar just closed; the next one is a full step
+    assert engine.next_boundary({"5min"}, at(10, 10, 0)) == at(10, 15)
+
+    # hour and day rollover
+    assert engine.next_boundary({"15min"}, at(10, 52)) == at(11, 0)
+    assert engine.next_boundary({"5min"}, at(23, 58)) == \
+        datetime(2026, 8, 18, 0, 0, tzinfo=et)
+
+    # unknown/empty timeframes must not crash the cron path
+    assert engine.next_boundary(set()) is None
+    assert engine.next_boundary({"7min"}) is None
+    assert engine.previous_boundary(set()) is None
+    assert engine.bar_step_minutes({"15min", "5min"}) == 5
+
+    # previous_boundary drives the scheduler: the bar that JUST closed is the one
+    # worth waiting for. Aligning to the NEXT one instead would add a whole interval
+    # of latency to the invocation for nothing.
+    assert engine.previous_boundary({"15min"}, at(10, 0, 4)) == at(10, 0)
+    assert engine.previous_boundary({"15min"}, at(10, 7, 30)) == at(10, 0)
+    assert engine.previous_boundary({"15min"}, at(10, 14, 59)) == at(10, 0)
+    assert engine.previous_boundary({"15min"}, at(10, 15, 0)) == at(10, 15), "on a close, that IS the last bar"
+    assert engine.previous_boundary({"1min"}, at(10, 0, 4)) == at(10, 0)
+
+    # the resulting decision: sleep only just after a close, never for a stale one
+    def wait_for(tfs, t):
+        b = engine.previous_boundary(tfs, t)
+        return (b + timedelta(seconds=18) - t).total_seconds()
+    assert wait_for({"15min"}, at(10, 0, 4)) == 14, "a ping just after the close waits for the bar"
+    assert wait_for({"15min"}, at(10, 0, 25)) < 0, "already published -> evaluate immediately"
+    assert wait_for({"15min"}, at(10, 7, 30)) < 0, "mid-bar -> nothing new to wait for"
+    print("  ✓ boundary OK (next/previous, shortest wins, on-boundary, rollover)")
+
+
+def test_close_grace():
+    print("Testing the close grace window (last bar of the session)...")
+    et = engine.ET
+    # a Monday, regular 16:00 close
+    just_after = datetime(2026, 8, 17, 16, 0, 30, tzinfo=et)
+    assert engine.market_is_open(just_after) is False, "strict gate must still say closed"
+    assert engine.market_is_open(just_after, grace_seconds=120) is True, \
+        "the 16:00 bar publishes after the close and must still be evaluable"
+    # the grace is bounded, not an open door
+    assert engine.market_is_open(datetime(2026, 8, 17, 16, 5, tzinfo=et),
+                                 grace_seconds=120) is False
+    # and it never opens the market early or on a weekend
+    assert engine.market_is_open(datetime(2026, 8, 17, 9, 29, tzinfo=et),
+                                 grace_seconds=120) is False
+    assert engine.market_is_open(datetime(2026, 8, 15, 12, 0, tzinfo=et),
+                                 grace_seconds=120) is False
+    print("  ✓ grace OK (final bar evaluable, pill stays strict, bounded)")
+
+
+def test_cooldown_rearm():
+    print("Testing the cooldown re-arm (a held condition must not go silent forever)...")
+    db.init()
+    rid = "cooldown-rule"
+    db.set_setting("_", "_")
+
+    original = config.RULE_COOLDOWN_MINUTES
+    try:
+        config.RULE_COOLDOWN_MINUTES = 30
+        assert db.record_transition(rid, True, 10.0) is True, "first True must fire"
+        assert db.record_transition(rid, True, 10.0) is False, "still held, inside cooldown"
+
+        # wind last_fired_at back past the window -> the rule re-arms
+        stale = (datetime.now(db.ET) - timedelta(minutes=31)).isoformat()
+        with db._db(write=True) as c:
+            db._exec(c, "UPDATE rule_state SET last_fired_at=? WHERE rule_id=?", (stale, rid))
+        assert db.record_transition(rid, True, 10.0) is True, "must re-fire after the cooldown"
+        assert db.record_transition(rid, True, 10.0) is False, "and latch again immediately"
+
+        # a second cycle racing the same re-arm must not also win it
+        with db._db(write=True) as c:
+            db._exec(c, "UPDATE rule_state SET last_fired_at=? WHERE rule_id=?", (stale, rid))
+        wins = [db.record_transition(rid, True, 10.0) for _ in range(3)]
+        assert wins.count(True) == 1, f"exactly one caller may claim a re-arm: {wins}"
+
+        # condition clearing still re-arms immediately, as before
+        assert db.record_transition(rid, False, 50.0) is False
+        assert db.record_transition(rid, True, 10.0) is True, "a fresh edge always fires"
+
+        # 0 disables it: pure edge-triggered, today's behaviour
+        config.RULE_COOLDOWN_MINUTES = 0
+        with db._db(write=True) as c:
+            db._exec(c, "UPDATE rule_state SET last_fired_at=? WHERE rule_id=?", (stale, rid))
+        assert db.record_transition(rid, True, 10.0) is False, "cooldown=0 must never re-arm"
+    finally:
+        config.RULE_COOLDOWN_MINUTES = original
+    print("  ✓ cooldown OK (re-arms once, race-safe, clears on edge, 0 disables)")
+
+
+def test_delivery_outbox():
+    print("Testing the delivery outbox (a killed cycle must not lose the email)...")
+    db.init()
+    uid = "outbox-user"
+    rule = {"id": "ob-rule", "user_id": uid, "name": "ob", "symbol": "SPY", "timeframe": "5min"}
+
+    aid = db.append_alert(rule, "RSI(14) below 15", 12.0, 400.0)
+    assert aid, "append_alert must return the new row id"
+    pending = [a["id"] for a in db.unsent_alerts()]
+    assert aid in pending, "a new alert starts UNSENT so a killed cycle can retry it"
+
+    db.mark_alerts_sent([aid])
+    assert aid not in [a["id"] for a in db.unsent_alerts()], "delivered alerts leave the outbox"
+
+    # a failing send leaves it queued and counts the attempt
+    aid2 = db.append_alert(rule, "RSI(14) below 15", 11.0, 399.0)
+    db.bump_attempts([aid2])
+    row = [a for a in db.unsent_alerts() if a["id"] == aid2]
+    assert row and row[0]["attempts"] == 1, "a failed send must record an attempt"
+
+    # attempts are bounded — a poison alert stops rather than wedging every cycle
+    for _ in range(config.DELIVERY_MAX_ATTEMPTS):
+        db.bump_attempts([aid2])
+    assert aid2 not in [a["id"] for a in db.unsent_alerts()], "retries must be bounded"
+
+    # …and so is age
+    aid3 = db.append_alert(rule, "old one", 10.0, 398.0)
+    with db._db(write=True) as c:
+        db._exec(c, "UPDATE alerts SET ts_ms=? WHERE id=?",
+                 (int((time.time() - 999 * 60) * 1000), aid3))
+    assert aid3 not in [a["id"] for a in db.unsent_alerts()], "stale alerts age out of the outbox"
+
+    # the engine retries a stranded alert on the next cycle, batched per user
+    db.mark_alerts_sent([a["id"] for a in db.unsent_alerts(max_attempts=1 << 30,
+                                                           max_age_minutes=1 << 30)])
+    stranded = db.append_alert(rule, "stranded", 9.0, 397.0)
+    db.set_user_recipients(uid, ["ob@x.com"])
+    sent = []
+    real = notifier.send_batch
+    notifier.send_batch = lambda fires, ts, recipients, **k: sent.append(len(fires))
+    try:
+        engine._deliver(engine._retry_unsent())
+    finally:
+        notifier.send_batch = real
+    assert sent and sum(sent) >= 1, f"a stranded alert must be re-sent: {sent}"
+    assert stranded not in [a["id"] for a in db.unsent_alerts()], \
+        "a successful retry must clear the alert from the outbox"
+    print("  ✓ outbox OK (unsent by default, bounded by attempts+age, retried and cleared)")
+
+
 def main():
     print("=" * 60)
     print("Market Alert System — comprehensive tests (v2)")
     print("=" * 60)
     tests = [test_config, test_indicators, test_conditions, test_market_calendar, test_db,
-             test_user_isolation, test_sqlite_migration, test_notifier_dry_run, test_engine_cycle,
+             test_user_isolation, test_sqlite_migration, test_notifier_dry_run,
+             test_boundary_alignment, test_close_grace, test_cooldown_rearm,
+             test_delivery_outbox, test_engine_cycle,
              test_backtest_and_watchlist, test_stream_aggregation, test_api_auth, test_ai]
     passed = failed = 0
     for t in tests:

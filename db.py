@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import config
@@ -40,8 +40,7 @@ def _exec(conn, sql, params=()):
     return conn.execute(sql, params)
 
 
-@contextmanager
-def _db(write=False):
+def _connect():
     if _is_pg():
         import psycopg
         from psycopg.rows import dict_row
@@ -55,6 +54,35 @@ def _db(write=False):
     else:
         conn = sqlite3.connect(config.DB_FILE, timeout=10)
         conn.row_factory = sqlite3.Row
+    return conn
+
+
+# One evaluation cycle used to open a fresh connection per db call — N+F+Uf+U+4 of
+# them, each a full TLS+auth handshake through the pooler. `session()` lends the
+# whole cycle a single connection that `_db()` reuses. Commit boundaries are
+# unchanged: every write still commits at the end of its own `_db(write=True)`
+# block, so a mid-cycle kill leaves exactly what it left before.
+_ambient = threading.local()
+
+
+@contextmanager
+def session():
+    """Reuse one connection for every _db() call on this thread."""
+    if getattr(_ambient, "conn", None) is not None:
+        yield  # already inside a session; do not nest or double-close
+        return
+    _ambient.conn = _connect()
+    try:
+        yield
+    finally:
+        conn, _ambient.conn = _ambient.conn, None
+        conn.close()
+
+
+@contextmanager
+def _db(write=False):
+    borrowed = getattr(_ambient, "conn", None)
+    conn = borrowed or _connect()
     try:
         if write:
             _write_lock.acquire()
@@ -64,7 +92,10 @@ def _db(write=False):
     finally:
         if write:
             _write_lock.release()
-        conn.close()
+        # A borrowed connection belongs to session(); closing it here would pull it
+        # out from under every later call in the same cycle.
+        if borrowed is None:
+            conn.close()
 
 
 def init():
@@ -90,10 +121,14 @@ def init():
             last_value {real}, last_fired_at TEXT)""")
         # alerts carry their own user_id rather than joining rules: delete_rule
         # deliberately leaves history behind, and a join would erase it.
+        # `sent`/`attempts` make delivery an outbox: history is written before the
+        # email is attempted, so without them a cycle killed at the 60s ceiling (or a
+        # Resend 5xx) leaves the rule latched, the alert in history, and no mail ever.
         _exec(c, f"""CREATE TABLE IF NOT EXISTS alerts(
             id {serial}, user_id TEXT NOT NULL, rule_id TEXT, name TEXT,
             symbol TEXT, timeframe TEXT, description TEXT,
-            value {real}, price {real}, ts TEXT, ts_ms {bigint})""")
+            value {real}, price {real}, ts TEXT, ts_ms {bigint},
+            sent INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0)""")
         _exec(c, "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
         if pg:
             # The deployed tables predate per-user accounts and CREATE TABLE IF NOT
@@ -102,6 +137,12 @@ def init():
             # answers requests against tables that no longer exist.
             _exec(c, "ALTER TABLE rules  ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''")
             _exec(c, "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''")
+            # DEFAULT 1 on the migration path ONLY: every pre-existing alert is
+            # historical and was already delivered (or already missed). Defaulting
+            # them to 0 would re-email the entire history on first deploy.
+            # append_alert always passes `sent` explicitly, so new rows are unaffected.
+            _exec(c, "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS sent INTEGER NOT NULL DEFAULT 1")
+            _exec(c, "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0")
         if not pg:
             # migrate older SQLite files: ts_ms (epoch ms for "triggered X ago") and
             # user_id both postdate existing dev databases, and CREATE TABLE IF NOT
@@ -113,6 +154,11 @@ def init():
             # owned by nobody are invisible to every account until adopted by hand.
             if "user_id" not in acols:
                 _exec(c, "ALTER TABLE alerts ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+            # See the Postgres branch: DEFAULT 1 so existing history is not re-sent.
+            if "sent" not in acols:
+                _exec(c, "ALTER TABLE alerts ADD COLUMN sent INTEGER NOT NULL DEFAULT 1")
+            if "attempts" not in acols:
+                _exec(c, "ALTER TABLE alerts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
             if "user_id" not in {r["name"] for r in _exec(c, "PRAGMA table_info(rules)")}:
                 _exec(c, "ALTER TABLE rules ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
         # AFTER the migration, never before: on a pre-existing database the columns
@@ -131,6 +177,19 @@ def set_setting(key, value):
     with _db(write=True) as c:
         _exec(c, "INSERT INTO settings(key,value) VALUES(?,?) "
                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+
+
+def prune_cycle_claims(keep_after):
+    """Drop spent boundary claims so the settings table does not grow forever.
+
+    Called from the market-closed branch: off-hours, once per ping, one DELETE.
+    Keys are `cycle:<epoch-minute>`. Epoch minutes are 8 digits from 2009 until
+    ~2160, so within that window a lexical compare and a numeric one agree and the
+    plain `<` is safe.
+    """
+    with _db(write=True) as c:
+        _exec(c, "DELETE FROM settings WHERE key LIKE 'cycle:%' AND key < ?",
+              (f"cycle:{keep_after}",))
 
 
 def claim_once(key):
@@ -228,12 +287,20 @@ def delete_rule(rid, user_id):
 
 
 def record_transition(rule_id, fired, value):
-    """Persist fired-state; return True only on a fresh False->True edge (a new alert).
+    """Persist fired-state; return True when the rule should alert.
 
-    The edge is claimed by an UPDATE guarded on `fired=0`, so exactly one caller
-    can win it even if two evaluation cycles overlap.
+    That is a fresh False->True edge, claimed by an UPDATE guarded on `fired=0`, so
+    exactly one caller wins it even if two evaluation cycles overlap.
+
+    A rule whose condition simply STAYS true would otherwise alert once and go
+    silent forever — RSI parked below 15 for three days is one email. So a latched
+    rule re-arms once RULE_COOLDOWN_MINUTES have passed since it last fired. The
+    re-claim carries its own `last_fired_at <= cutoff` guard, which makes it exactly
+    as atomic as the edge claim: two concurrent cycles cannot both win it.
+    Set RULE_COOLDOWN_MINUTES=0 to restore pure edge-triggered firing.
     """
-    now = datetime.now(ET).isoformat()
+    now_dt = datetime.now(ET)
+    now = now_dt.isoformat()
     with _db(write=True) as c:
         _exec(c, "INSERT INTO rule_state(rule_id,fired,last_value) VALUES(?,0,NULL) "
                  "ON CONFLICT(rule_id) DO NOTHING", (rule_id,))
@@ -244,20 +311,70 @@ def record_transition(rule_id, fired, value):
                        "WHERE rule_id=? AND fired=0", (value, now, rule_id))
         if cur.rowcount == 1:
             return True
+        cooldown = config.RULE_COOLDOWN_MINUTES
+        if cooldown > 0:
+            cutoff = (now_dt - timedelta(minutes=cooldown)).isoformat()
+            # last_fired_at is TEXT ISO-8601 in a fixed offset-aware format, so a
+            # lexical <= is a chronological one.
+            cur = _exec(c, "UPDATE rule_state SET last_value=?,last_fired_at=? "
+                           "WHERE rule_id=? AND fired=1 AND last_fired_at IS NOT NULL "
+                           "AND last_fired_at<=?", (value, now, rule_id, cutoff))
+            if cur.rowcount == 1:
+                return True
         _exec(c, "UPDATE rule_state SET last_value=? WHERE rule_id=?", (value, rule_id))
         return False
 
 
 def append_alert(rule, description, value, price):
+    """Record a fired alert as UNSENT and return its id.
+
+    `sent` is passed explicitly (never left to the column default) because the
+    migration adds that column with DEFAULT 1 to spare pre-existing history from
+    being re-emailed. New rows must start at 0 regardless.
+    """
     # rule["user_id"], not .get(): an alert with no owner is one nobody can ever
     # see, and it should fail in tests rather than vanish in production.
+    sql = ("INSERT INTO alerts(user_id,rule_id,name,symbol,timeframe,description,value,price,ts,ts_ms,sent,attempts) "
+           "VALUES(?,?,?,?,?,?,?,?,?,?,0,0)")
+    params = (rule["user_id"], rule["id"], rule["name"], rule["symbol"], rule["timeframe"],
+              description, value, price,
+              datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"), int(time.time() * 1000))
     with _db(write=True) as c:
-        _exec(c,
-              "INSERT INTO alerts(user_id,rule_id,name,symbol,timeframe,description,value,price,ts,ts_ms) "
-              "VALUES(?,?,?,?,?,?,?,?,?,?)",
-              (rule["user_id"], rule["id"], rule["name"], rule["symbol"], rule["timeframe"],
-               description, value, price,
-               datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"), int(time.time() * 1000)))
+        if _is_pg():
+            return _exec(c, sql + " RETURNING id", params).fetchone()["id"]
+        return _exec(c, sql, params).lastrowid
+
+
+def unsent_alerts(max_attempts=None, max_age_minutes=None):
+    """Alerts written but not yet delivered, oldest first.
+
+    Bounded on both attempts and age so a permanently failing alert (bad recipient,
+    Resend rejecting the payload) eventually stops being retried instead of
+    wedging every later cycle behind it.
+    """
+    max_attempts = config.DELIVERY_MAX_ATTEMPTS if max_attempts is None else max_attempts
+    max_age_minutes = config.DELIVERY_MAX_AGE_MINUTES if max_age_minutes is None else max_age_minutes
+    floor_ms = int((time.time() - max_age_minutes * 60) * 1000)
+    with _db() as c:
+        return [dict(r) for r in _exec(
+            c, "SELECT * FROM alerts WHERE sent=0 AND attempts<? AND ts_ms>=? ORDER BY id",
+            (max_attempts, floor_ms))]
+
+
+def mark_alerts_sent(ids):
+    if not ids:
+        return
+    with _db(write=True) as c:
+        for aid in ids:  # ponytail: per-id UPDATE; one statement per alert is fine at this volume
+            _exec(c, "UPDATE alerts SET sent=1 WHERE id=?", (aid,))
+
+
+def bump_attempts(ids):
+    if not ids:
+        return
+    with _db(write=True) as c:
+        for aid in ids:
+            _exec(c, "UPDATE alerts SET attempts=attempts+1 WHERE id=?", (aid,))
 
 
 def list_alerts(user_id, limit=50):
