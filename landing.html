@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<title>Alert Radar — market alerts on your own rules</title>
+<meta name="description" content="Write the rule — RSI, price, % change, MA cross — and Alert Radar emails you the moment it turns true. Once, not forty times." />
+<meta property="og:title" content="Alert Radar — market alerts on your own rules" />
+<meta property="og:description" content="Real-time bars, evaluated at the close. One email per transition." />
+<meta property="og:type" content="website" />
+<script>
+  /* Both of these must land before the first paint: the theme, or the page
+     flashes the wrong ground, and the `js` flag, or the sections that
+     materialize on scroll would start invisible for a reader with no script. */
+  document.documentElement.classList.add('js');
+  try {
+    var _t = localStorage.getItem('ar_theme');
+    if (_t === 'light' || _t === 'dark') document.documentElement.dataset.theme = _t;
+  } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/site.css" />
+<script src="/site.js" defer></script>
+</head>
+<body>
+<a href="#main" class="skip-link">Skip to content</a>
+
+<header class="bar">
+  <div class="wrap bar-inner">
+    <a href="/" class="brand" aria-label="Alert Radar home">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+      <span>Alert Radar</span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how" class="btn btn-ghost">How it fires</a>
+      <a href="#lag" class="btn btn-ghost">Lag</a>
+      <a href="#features" class="btn btn-ghost">Features</a>
+    </nav>
+    <div style="flex:1"></div>
+    <button class="icon-btn" data-theme-toggle aria-label="Switch theme">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
+    </button>
+    <a href="/signin" class="btn btn-ghost sign-in-link">Sign in</a>
+    <a href="/signup" class="btn btn-primary">Get started</a>
+  </div>
+</header>
+
+<main id="main" tabindex="-1" style="outline:none">
+
+  <!-- ============ HERO ============ -->
+  <section class="wrap" style="padding-top:clamp(7rem,16vw,11rem);padding-bottom:clamp(1rem,3vw,2rem)">
+    <div class="center stack" style="--gap:1.5rem;max-width:52rem">
+      <span class="chip chip-accent"><span class="dot"></span>Real-time bars, evaluated at the close</span>
+      <h1 class="t-hero">Set the rule.<br />Close the tab.</h1>
+      <p class="t-lede" style="max-width:36rem;margin-inline:auto">
+        Alert Radar watches AAPL, NVDA, AMZN, IWM, QQQ and SPY from one minute to one hour,
+        evaluates the conditions you write, and emails you the moment one turns true —
+        once, not forty times.
+      </p>
+      <div class="row-actions">
+        <a href="/signup" class="btn btn-primary btn-lg">Create your account</a>
+        <a href="/signin" class="btn btn-quiet btn-lg">Sign in</a>
+      </div>
+      <p class="t-cap">Google sign-in. Nothing to install.</p>
+    </div>
+  </section>
+
+  <!-- ============ THE DECK ============
+       Five condition types you can throw with a finger. The same
+       spring, projection and rubber-band the dashboard's sheet uses. -->
+  <section aria-labelledby="deck-h">
+    <h2 id="deck-h" class="sr-only">Condition types</h2>
+    <div class="deck" tabindex="0" role="group" aria-roledescription="carousel"
+         aria-label="Five condition types. Drag, or use the left and right arrow keys.">
+      <div class="deck-track">
+
+        <article class="deck-card">
+          <div class="deck-head"><span class="deck-sym">NVDA</span><span class="chip chip-neutral">RSI</span><span style="flex:1"></span><span class="chip chip-low"><span class="dot"></span>Fired</span></div>
+          <p class="deck-val num">12.4</p>
+          <p class="t-label" style="margin-top:.35rem">RSI · 5-minute</p>
+          <p class="t-cap" style="margin-top:.9rem">Email me the moment it drops below 15.</p>
+        </article>
+
+        <article class="deck-card">
+          <div class="deck-head"><span class="deck-sym">AAPL</span><span class="chip chip-neutral">RSI band</span><span style="flex:1"></span><span class="chip chip-neutral">Armed</span></div>
+          <p class="deck-val num">41.7</p>
+          <p class="t-label" style="margin-top:.35rem">RSI · 15-minute</p>
+          <p class="t-cap" style="margin-top:.9rem">Either bound counts — 15 below, 85 above.</p>
+        </article>
+
+        <article class="deck-card">
+          <div class="deck-head"><span class="deck-sym">SPY</span><span class="chip chip-neutral">Price</span><span style="flex:1"></span><span class="chip chip-neutral">Armed</span></div>
+          <p class="deck-val num">640.00</p>
+          <p class="t-label" style="margin-top:.35rem">Your line · 15-minute</p>
+          <p class="t-cap" style="margin-top:.9rem">The first close above it, and not one after.</p>
+        </article>
+
+        <article class="deck-card">
+          <div class="deck-head"><span class="deck-sym">QQQ</span><span class="chip chip-neutral">% change</span><span style="flex:1"></span><span class="chip chip-neutral">Armed</span></div>
+          <p class="deck-val num">−2.0<span style="font-size:.5em">%</span></p>
+          <p class="t-label" style="margin-top:.35rem">Over the window · 1-hour</p>
+          <p class="t-cap" style="margin-top:.9rem">Tell me when the drop gets that steep.</p>
+        </article>
+
+        <article class="deck-card">
+          <div class="deck-head"><span class="deck-sym">IWM</span><span class="chip chip-neutral">MA cross</span><span style="flex:1"></span><span class="chip chip-neutral">Armed</span></div>
+          <p class="deck-val num">9 × 21</p>
+          <p class="t-label" style="margin-top:.35rem">Fast over slow · 5-minute</p>
+          <p class="t-cap" style="margin-top:.9rem">The bar the fast average crosses up.</p>
+        </article>
+
+      </div>
+    </div>
+    <div class="deck-dots" role="group" aria-label="Jump to a condition type">
+      <button class="deck-dot" aria-label="RSI"></button>
+      <button class="deck-dot" aria-label="RSI band"></button>
+      <button class="deck-dot" aria-label="Price level"></button>
+      <button class="deck-dot" aria-label="Percent change"></button>
+      <button class="deck-dot" aria-label="Moving-average cross"></button>
+    </div>
+    <p class="t-cap center" style="margin-top:1.1rem">Five condition types. A new one is about fifteen lines.</p>
+  </section>
+
+  <!-- ============ HOW IT FIRES ============ -->
+  <section id="how" class="wrap section">
+    <div class="rise stack" style="--gap:.75rem;max-width:34rem;margin-bottom:clamp(2.5rem,6vw,4rem)">
+      <p class="t-label">How an alert fires</p>
+      <h2 class="t-title">Four steps, and only one of them is yours.</h2>
+    </div>
+    <div class="steps">
+      <div class="rise">
+        <p class="step-n">01</p>
+        <p class="t-head">Bars arrive in real time</p>
+        <p class="t-cap" style="margin-top:.4rem">A live stream feeds the one-, five-, fifteen-minute and hourly series for every symbol you watch.</p>
+      </div>
+      <div class="rise">
+        <p class="step-n">02</p>
+        <p class="t-head">Nothing is judged mid-candle</p>
+        <p class="t-cap" style="margin-top:.4rem">A rule only ever sees closed bars, so a wick that reverses before the close never wakes you.</p>
+      </div>
+      <div class="rise">
+        <p class="step-n">03</p>
+        <p class="t-head">It fires on the transition</p>
+        <p class="t-cap" style="margin-top:.4rem">The alert sends once, when the condition becomes true, and re-arms only after it clears again.</p>
+      </div>
+      <div class="rise">
+        <p class="step-n">04</p>
+        <p class="t-head">The email lands</p>
+        <p class="t-cap" style="margin-top:.4rem">Clean HTML mail from your own verified domain. No app to open, no tab to keep alive.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ THE LAG ============ -->
+  <section id="lag" class="wrap section" style="padding-top:0">
+    <div class="card panel rise" style="padding:clamp(1.75rem,5vw,3.5rem)">
+      <div class="center stack" style="--gap:1rem;max-width:40rem">
+        <p class="t-label">The number nobody else prints</p>
+        <h2 class="t-title">We show you the lag instead of hiding it.</h2>
+        <p class="t-cap" style="font-size:1rem">
+          Every alerting tool says <em>instant</em>. The truth is that a rule cannot see a move
+          until its bar closes — an average of half the timeframe, which dwarfs every other
+          delay combined. Pick a timeframe and watch what you are actually signing up for.
+        </p>
+      </div>
+
+      <div class="center" style="margin-top:2.25rem">
+        <div class="seg" data-output="lag-out" data-live="lag-live" role="group" aria-label="Rule timeframe">
+          <span class="seg-pill" aria-hidden="true"></span>
+          <button type="button" aria-pressed="false" data-seconds="30"   data-text="about 30 seconds">1 min</button>
+          <button type="button" aria-pressed="false" data-seconds="150"  data-text="about 2.5 minutes">5 min</button>
+          <button type="button" aria-pressed="true"  data-seconds="450"  data-text="about 7.5 minutes">15 min</button>
+          <button type="button" aria-pressed="false" data-seconds="1800" data-text="about 30 minutes">1 hour</button>
+        </div>
+        <p id="lag-out" class="num" aria-hidden="true"
+           style="margin-top:1.5rem;font-size:clamp(3rem,2rem + 5vw,4.5rem);font-weight:500;line-height:1">
+          <span>7.5</span> <span style="font-size:.3em;font-weight:600;letter-spacing:.06em;color:var(--text-3)">min</span>
+        </p>
+        <p class="sr-only" role="status" id="lag-live">15 min rule: about 7.5 minutes</p>
+        <p class="t-cap" style="margin-top:.9rem;color:var(--text-3);max-width:34rem;margin-inline:auto">
+          Average wait for the bar boundary — half the timeframe. Evaluation and delivery add seconds on top.
+          The dashboard derives this from your own rules; it is not a marketing figure.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FEATURES ============ -->
+  <section id="features" class="wrap section" style="padding-top:0">
+    <div class="rise stack" style="--gap:.75rem;max-width:34rem;margin-bottom:clamp(2rem,5vw,3rem)">
+      <p class="t-label">What you get</p>
+      <h2 class="t-title">Built by someone who got tired of watching tabs.</h2>
+    </div>
+    <div class="features">
+      <article class="card feature rise">
+        <span class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M8.5 12h2l1.5-3 1.5 5 1-2h1"/></svg></span>
+        <p class="t-head">Dead-man's switch</p>
+        <p class="t-cap" style="margin-top:.45rem">If the evaluation loop stops completing healthy cycles you get an email, and the dashboard shows <em>Monitor stalled</em>. You find out when the monitor breaks — not when you miss a trade.</p>
+      </article>
+      <article class="card feature rise">
+        <span class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg></span>
+        <p class="t-head">Zero-spam de-duplication</p>
+        <p class="t-cap" style="margin-top:.45rem">A transition-based state machine sends one alert when the condition turns true, then holds until it clears. An oversold hour is one email, not sixty.</p>
+      </article>
+      <article class="card feature rise">
+        <span class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></span>
+        <p class="t-head">Backtest before you arm it</p>
+        <p class="t-cap" style="margin-top:.45rem">Replay any condition over the recent lookback window and get the fire count, the fire rate, and the exact bars it would have triggered on.</p>
+      </article>
+      <article class="card feature rise">
+        <span class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        <p class="t-head">Watchlist at a glance</p>
+        <p class="t-cap" style="margin-top:.45rem">Live price and RSI for every symbol across every timeframe, colour-coded oversold and overbought — before you commit to a rule.</p>
+      </article>
+      <article class="card feature rise">
+        <span class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg></span>
+        <p class="t-head">Describe it in English</p>
+        <p class="t-cap" style="margin-top:.45rem">“Email me when NVDA's 5-minute RSI drops below 15.” An in-process model drafts the rule — no cloud, no API key. Optional, and it fails open.</p>
+      </article>
+      <article class="card feature rise">
+        <span class="feature-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6l-6 6 6 6"/><path d="M16 6l6 6-6 6"/></svg></span>
+        <p class="t-head">Yours to run</p>
+        <p class="t-cap" style="margin-top:.45rem">MIT-licensed and self-hostable, with three runtime dependencies. Bring your own market-data key and mail domain, or use the hosted one.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ============ CTA ============ -->
+  <section class="wrap" style="padding-bottom:clamp(4rem,10vw,7rem)">
+    <div class="center stack rise" style="--gap:1.1rem;max-width:34rem">
+      <h2 class="t-title">Your first rule takes about a minute.</h2>
+      <p class="t-lede">Sign in with Google, set the address the alerts go to, and pick a condition.</p>
+      <div class="row-actions"><a href="/signup" class="btn btn-primary btn-lg">Create your account</a></div>
+    </div>
+  </section>
+</main>
+
+<footer style="border-top:1px solid var(--line)">
+  <div class="wrap" style="padding-block:1.75rem;display:flex;flex-wrap:wrap;gap:1rem;align-items:center">
+    <a href="/" class="brand" aria-label="Alert Radar home">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+      <span>Alert Radar</span>
+    </a>
+    <div style="flex:1"></div>
+    <a href="/signin" class="btn btn-ghost">Sign in</a>
+    <a href="/signup" class="btn btn-ghost">Get started</a>
+  </div>
+  <div class="wrap" style="padding-bottom:2.5rem">
+    <p class="t-cap" style="color:var(--text-3);max-width:44rem">
+      © <span data-year>2026</span> Alert Radar. Alert Radar delivers notifications on conditions you define.
+      It is not investment advice, and it is not a broker or an execution venue.
+    </p>
+  </div>
+</footer>
+
+<style>
+  /* Page-specific layout. Everything shared lives in site.css. */
+  .nav-links { display: none; }
+  @media (min-width: 900px) { .nav-links { display: flex; gap: .1rem; margin-left: 1rem; } }
+  @media (max-width: 400px) { .sign-in-link { display: none; } }  /* the hero and the footer both still offer it */
+  .deck { --deck-w: min(21rem, 78vw); --deck-gap: 1rem; }
+</style>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="color-scheme" content="dark light" />
+<meta name="robots" content="noindex" />
+<title>Nothing on this frequency — Alert Radar</title>
+<script>
+  document.documentElement.classList.add('js');
+  try {
+    var _t = localStorage.getItem('ar_theme');
+    if (_t === 'light' || _t === 'dark') document.documentElement.dataset.theme = _t;
+  } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/site.css" />
+<script src="/site.js" defer></script>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap bar-inner">
+    <a href="/" class="brand" aria-label="Alert Radar home">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+      <span>Alert Radar</span>
+    </a>
+    <div style="flex:1"></div>
+    <button class="icon-btn" data-theme-toggle aria-label="Switch theme">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg>
+    </button>
+  </div>
+</header>
+
+<main style="display:grid;place-items:center;min-height:100dvh;padding:5rem 1.25rem 3rem">
+  <div class="center stack rise rise-pop" style="--gap:1rem;max-width:30rem">
+    <div class="radar" style="margin:0 auto 1.5rem" role="img" aria-label="A radar sweep finding nothing"></div>
+    <p class="t-label num" style="letter-spacing:.16em">404</p>
+    <h1 class="t-title">Nothing on this frequency.</h1>
+    <p class="t-lede">
+      The page you asked for isn't here. Your rules are untouched and still watching —
+      only this address came back empty.
+    </p>
+    <div class="row-actions" style="margin-top:.5rem">
+      <a href="/" class="btn btn-primary btn-lg">Back to home</a>
+      <a href="/signin" class="btn btn-quiet btn-lg">Sign in</a>
+    </div>
+  </div>
+</main>
+</body>
+</html>

@@ -19,8 +19,8 @@ import requests
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse, Response)
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse,
+                               Response)
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import ai
@@ -185,7 +185,8 @@ else:
 # The cron secret stays separate: a signed-in user must not be able to force
 # evaluation cycles, each of which spends market-data quota and can send mail.
 
-_OPEN_PATHS = {"/api/auth/start", "/api/auth/callback", "/api/logout", "/healthz"}
+_OPEN_PATHS = {"/api/auth/start", "/api/auth/callback", "/api/logout", "/healthz",
+               "/signin", "/signup", "/site.css", "/site.js"}
 
 
 # --- stateless session cookie ---
@@ -262,33 +263,36 @@ async def _gate(request: Request, call_next):
                       "(or ALERT_RADAR_TOKEN) in the project's environment variables."})
     if _user(request):
         return await call_next(request)
-    if path == "/" or path.startswith("/docs") or path.startswith("/redoc"):
-        return HTMLResponse(_login_page(), status_code=401)
-    return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    # Unauthenticated. "/" is the public landing page — the dashboard shell is
+    # never rendered here, so nothing behind the gate leaks into the marketing page.
+    if path == "/":
+        # "/" is the dashboard for a signed-in caller and the landing page for
+        # everyone else, so the response varies by cookie. Say so out loud: an
+        # intermediary that cached this would serve one visitor's answer to the
+        # other, and the marketing page is the harmless half of that trade.
+        return FileResponse(config.ROOT / "landing.html",
+                            headers={"cache-control": "private, no-store"})
+    if path.startswith("/api"):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    if path.startswith(("/docs", "/redoc", "/openapi")):
+        return RedirectResponse("/signin", status_code=303)
+    # Anything else is an address we do not serve: fall through to the router,
+    # which 404s, and let the handler below render the page.
+    return await call_next(request)
 
 
-def _login_page(msg=""):
-    """`msg` only ever receives fixed literals from this module. Never reflect a
-    provider-supplied string (error_description, any query param) into it — this
-    is the one page that ships without a CSP."""
-    return f"""<!doctype html><meta charset=utf-8><title>Alert Radar</title>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<style>body{{font:16px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:#f2edfc;color:#2d2a45;
-display:grid;place-items:center;min-height:100vh;margin:0}}main{{background:#fff;padding:32px;border-radius:20px;
-box-shadow:0 8px 24px rgba(97,80,235,.14);max-width:340px;width:90%;text-align:center}}
-h1{{font-size:20px;margin:0 0 4px}}p{{color:#67628a;font-size:14px;margin:0 0 20px}}
-a.btn{{display:flex;align-items:center;justify-content:center;gap:10px;padding:12px;border-radius:10px;
-background:#5646e5;color:#fff;font-weight:700;font-size:15px;text-decoration:none}}
-.err{{color:#a62b47;font-size:13px;margin:12px 0 0;min-height:18px}}</style>
-<main><h1>&#128680; Alert Radar</h1><p>Sign in to manage your alerts.</p>
-<a class=btn href="/api/auth/start">Sign in with Google</a>
-<p class=err>{msg}</p></main>"""
+def _signin(reason=""):
+    """Back to the sign-in page. `reason` is a KEY, never a message, and only ever
+    one of this module's own literals — signin.html looks it up in a fixed table
+    and renders nothing for anything it does not recognise. A provider-supplied
+    string (error_description, any query param) must never reach the page."""
+    return RedirectResponse(f"/signin?e={reason}" if reason else "/signin", status_code=303)
 
 
 @app.get("/api/auth/start")
 def auth_start():
     if not (config.SUPABASE_URL and config.SITE_URL and config.SESSION_SECRET):
-        raise HTTPException(status_code=503, detail="Google sign-in is not configured.")
+        return _signin("unconfigured")   # the caller is a browser, not an API client
     verifier = secrets.token_urlsafe(64)  # RFC 7636 wants 43-128 chars
     challenge = _b64e(hashlib.sha256(verifier.encode()).digest()).decode()
     redirect_to = f"{config.SITE_URL}/api/auth/callback"
@@ -307,20 +311,20 @@ def auth_start():
 def auth_callback(request: Request, code: str = ""):
     verifier = request.cookies.get(config.PKCE_COOKIE, "")
     if not code or not verifier:
-        return HTMLResponse(_login_page("Sign-in was cancelled or timed out."), status_code=401)
+        return _signin("cancelled")
     r = requests.post(f"{config.SUPABASE_URL}/auth/v1/token?grant_type=pkce", timeout=15,
                       headers={"apikey": config.SUPABASE_ANON_KEY, "Content-Type": "application/json"},
                       json={"auth_code": code, "code_verifier": verifier})
     if r.status_code != 200:
         logger.warning("pkce exchange failed: %s %s", r.status_code, r.text[:200])
-        return HTMLResponse(_login_page("Sign-in failed. Please try again."), status_code=401)
+        return _signin("failed")
     # The token response carries the user, so there is no second call and no JWT
     # signature to verify — which is what keeps this dependency-free. Both Supabase
     # tokens are read here and discarded; they never leave this function.
     u = (r.json() or {}).get("user") or {}
     uid, email = u.get("id"), (u.get("email") or "")
     if not uid:
-        return HTMLResponse(_login_page("Sign-in failed."), status_code=401)
+        return _signin("failed")
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(config.SESSION_COOKIE, make_session(uid, email), httponly=True, samesite="lax",
                     secure=config.SERVERLESS, max_age=60 * 60 * 24 * 30, path="/")
@@ -341,7 +345,45 @@ def healthz():
 
 @app.get("/")
 def index():
-    return FileResponse(config.ROOT / "index.html")
+    return FileResponse(config.ROOT / "index.html",
+                        headers={"cache-control": "private, no-store"})
+
+
+# --- public pages ----------------------------------------------------------
+# Static files, but there is no static mount: the whole app is one function, and
+# a mount would need its own path carve-out in the gate above.
+
+def _page(name, cache=600):
+    # Short by design: the pages are a single function's files, so a long TTL only
+    # buys a stale marketing page for ten minutes after every deploy.
+    if not config.SERVERLESS:
+        cache = 0        # local dev: an edit must show up on the next reload
+    return FileResponse(config.ROOT / name, headers={"cache-control": f"public, max-age={cache}"})
+
+
+@app.get("/signin", include_in_schema=False)
+@app.get("/signup", include_in_schema=False)
+def signin_page():
+    # One file, two addresses. signin.html reads location.pathname to decide which
+    # of the two it is, so the copy cannot be swapped by a crafted query string.
+    return _page("signin.html", cache=0)
+
+
+@app.get("/site.css", include_in_schema=False)
+def site_css():
+    return _page("site.css")
+
+
+@app.get("/site.js", include_in_schema=False)
+def site_js():
+    return _page("site.js")
+
+
+@app.exception_handler(404)
+def not_found(request: Request, exc):
+    if request.url.path.startswith("/api"):
+        return JSONResponse(status_code=404, content={"detail": getattr(exc, "detail", "Not Found")})
+    return FileResponse(config.ROOT / "404.html", status_code=404)
 
 
 @app.get("/api/meta")
@@ -360,6 +402,7 @@ def meta(user: dict = Depends(me)):
         # wrong provider for two releases because it restated a server fact the
         # client had no way to read.
         "data_provider": config.DATA_PROVIDER,
+        "live_price": config.LIVE_PRICE,
         "data_feed": config.ALPACA_FEED if config.DATA_PROVIDER == "alpaca" else "",
         "serverless": config.SERVERLESS,
     }
@@ -471,7 +514,9 @@ def _align_to_boundary():
 
     Returns the ISO boundary it waited for, or None if it did not wait.
     """
-    if not config.BOUNDARY_ALIGN or engine.DEMO:
+    # Live evaluation reads the tape, not the last closed bar, so there is nothing
+    # to wait for — sleeping toward a boundary would only add latency.
+    if not config.BOUNDARY_ALIGN or config.LIVE_PRICE or engine.DEMO:
         return None
     try:
         # One extra lightweight read before the cycle. It pays for itself: aligning

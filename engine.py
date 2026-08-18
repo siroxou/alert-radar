@@ -180,9 +180,25 @@ def data_client():
     return massive_client if config.DATA_PROVIDER == "massive" else alpaca_client
 
 
+# Per-cycle live tape: symbol -> current trade price. Set once at the top of a
+# cycle and read-only for the rest of it, so the concurrent prefetch can share it.
+# A module global like demo_series' own state; one cycle runs at a time (a Vercel
+# invocation is its own process, and the resident path guards with _evaluating).
+_live_prices = {}
+
+
 def _fetch_series(symbol, timeframe):
     mult, span, _disp, lookback = config.TIMEFRAMES[timeframe]
-    return {"closes": data_client().get_bars(symbol, mult, span, lookback)}
+    closes = data_client().get_bars(symbol, mult, span, lookback)
+    live = _live_prices.get(symbol)
+    if live is not None:
+        # Append the live price as a PROVISIONAL final bar. get_bars returns closed
+        # bars only, so without this a move is invisible until its bar ends. The
+        # indicators recompute from the whole series on every call (rsi.wilder_rsi
+        # keeps no running state), so a provisional element leaves no residue when
+        # the next cycle drops it.
+        closes = closes + [live]
+    return {"closes": closes}
 
 
 def _provider(series_provider=None):
@@ -225,6 +241,14 @@ def run_once(series_provider=None):
 def _run_once(series_provider=None):
     provider = _provider(series_provider)  # honours DEMO, so no path reaches the live API in demo mode
     rules = db.all_enabled_rules()
+    global _live_prices
+    # One request for every symbol in the cycle, not one per symbol. Only on the
+    # real REST path: demo synthesises its own series, and the stream provider
+    # already holds live data.
+    _live_prices = (alpaca_client.latest_prices({r["symbol"] for r in rules})
+                    if config.LIVE_PRICE and provider is _fetch_series else {})
+    if _live_prices:
+        logger.debug("live tape: %d symbol(s)", len(_live_prices))
     # ONE flat loop over every user's rules, not a per-user outer loop: `cache` is
     # what keeps 10 users watching NVDA 5min at a single paid upstream fetch, and
     # nesting by user is exactly the refactor that silently destroys that.

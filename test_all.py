@@ -152,11 +152,17 @@ def test_db():
     assert db.get_rule("r1", "userA")["name"] == "t2"
     assert db.list_rules("userA", enabled_only=True) == []
 
-    # dedup state machine: fire once → hold → reset → re-fire
+    # dedup state machine: fire once → hold → reset → re-fire.
+    # Pinned to 0: ALERT_MIN_GAP_SECONDS defaults non-zero under live evaluation and
+    # would (correctly) suppress the immediate re-fire this asserts. The gap has its
+    # own test below; this one is about the edge machine itself.
+    _gap = config.ALERT_MIN_GAP_SECONDS
+    config.ALERT_MIN_GAP_SECONDS = 0
     assert db.record_transition("r1", True, 10) is True
     assert db.record_transition("r1", True, 9) is False
     assert db.record_transition("r1", False, 50) is False
     assert db.record_transition("r1", True, 8) is True
+    config.ALERT_MIN_GAP_SECONDS = _gap
 
     # claim_once is the atomic guard against two cold starts both seeding
     assert db.claim_once("unit-test-claim") is True
@@ -445,17 +451,32 @@ def test_api_auth():
             "condition": {"type": "rsi", "threshold": 15, "direction": "below"}}
 
     with TestClient(main.app) as c:
-        # unauthenticated: the API refuses, the dashboard shell serves the sign-in page
+        # unauthenticated: the API refuses, "/" serves the public landing page
         assert c.get("/api/rules").status_code == 401
         assert c.put("/api/settings", json={"email_recipients": ["x@y.com"]}).status_code == 401
         r = c.get("/")
-        assert r.status_code == 401 and "Sign in with Google" in r.text, "shell must not render unauthenticated"
+        assert r.status_code == 200 and "Set the rule" in r.text, "landing must serve unauthenticated"
+        assert "page-dashboard" not in r.text, "shell must not render unauthenticated"
+
+        # the public pages are reachable with no session at all — a sign-up page
+        # behind the gate is a sign-up page nobody can use
+        assert "Continue with Google" in c.get("/signin").text
+        assert c.get("/signup").status_code == 200
+        assert c.get("/site.css").status_code == 200 and c.get("/site.js").status_code == 200
+        # an unknown address is a 404 PAGE, not a bare 401, and not the shell
+        miss = c.get("/no-such-page")
+        assert miss.status_code == 404 and "Nothing on this frequency" in miss.text
+        assert c.get("/api/no-such-thing").status_code == 401   # but the API still refuses first
+        assert c.get("/docs", follow_redirects=False).status_code == 303
 
         # a signed session is accepted; a tampered or expired one is not
         c.cookies.set(config.SESSION_COOKIE, main.make_session("u1", "u1@x.com"))
         assert c.get("/api/rules").status_code == 200
-        assert c.get("/").status_code == 200
+        assert "page-dashboard" in c.get("/").text, "signed in, the shell must render"
         assert c.get("/api/meta").json()["user"] == "u1@x.com"
+        # signed in, an unknown page still gets the 404 page and the API still gets JSON
+        assert c.get("/no-such-page").status_code == 404
+        assert c.get("/api/no-such-thing").json()["detail"] == "Not Found"
 
         tampered = main.make_session("u1", "u1@x.com")
         tampered = tampered[:-2] + ("aa" if tampered[-2:] != "aa" else "bb")
@@ -622,8 +643,13 @@ def test_cooldown_rearm():
     db.set_setting("_", "_")
 
     original = config.RULE_COOLDOWN_MINUTES
+    gap_original = config.ALERT_MIN_GAP_SECONDS
     try:
         config.RULE_COOLDOWN_MINUTES = 30
+        # This test is about the cooldown (a rule that STAYS true). The min-gap is a
+        # separate guard for live evaluation and has its own test; leaving it on here
+        # would suppress the fresh edges this asserts.
+        config.ALERT_MIN_GAP_SECONDS = 0
         assert db.record_transition(rid, True, 10.0) is True, "first True must fire"
         assert db.record_transition(rid, True, 10.0) is False, "still held, inside cooldown"
 
@@ -651,7 +677,87 @@ def test_cooldown_rearm():
         assert db.record_transition(rid, True, 10.0) is False, "cooldown=0 must never re-arm"
     finally:
         config.RULE_COOLDOWN_MINUTES = original
+        config.ALERT_MIN_GAP_SECONDS = gap_original
     print("  ✓ cooldown OK (re-arms once, race-safe, clears on edge, 0 disables)")
+
+
+def test_live_price_evaluation():
+    print("Testing live (intra-bar) evaluation + flap guard...")
+    # the live price is appended as a PROVISIONAL final bar, so a move is evaluated
+    # now rather than at the next bar close
+    original = dict(engine._live_prices)
+    try:
+        engine._live_prices = {"AAPL": 999.0}
+        called = {}
+
+        class FakeClient:
+            SYMBOL_RE = alpaca_client.SYMBOL_RE
+            @staticmethod
+            def get_bars(sym, mult, span, lookback):
+                called["hit"] = True
+                return [100.0, 101.0, 102.0]
+
+        real = engine.data_client
+        engine.data_client = lambda: FakeClient
+        try:
+            series = engine._fetch_series("AAPL", "5min")
+        finally:
+            engine.data_client = real
+        assert series["closes"] == [100.0, 101.0, 102.0, 999.0], series
+        assert called.get("hit"), "the closed-bar history is still fetched"
+
+        # a symbol with no live quote falls back to closed bars exactly as before
+        engine._live_prices = {}
+        engine.data_client = lambda: FakeClient
+        try:
+            assert engine._fetch_series("AAPL", "5min")["closes"] == [100.0, 101.0, 102.0]
+        finally:
+            engine.data_client = real
+    finally:
+        engine._live_prices = original
+
+    # latest_prices must never raise — a dead quote endpoint degrades to closed bars
+    real_key = config.ALPACA_API_KEY
+    config.ALPACA_API_KEY = ""
+    try:
+        assert alpaca_client.latest_prices(["SPY"]) == {}, "no creds -> empty, not an exception"
+    finally:
+        config.ALPACA_API_KEY = real_key
+
+    # --- the flap guard -----------------------------------------------------
+    db.init()
+    rid = "flap-rule"
+    gap_original = config.ALERT_MIN_GAP_SECONDS
+    cd_original = config.RULE_COOLDOWN_MINUTES
+    try:
+        config.ALERT_MIN_GAP_SECONDS = 300
+        config.RULE_COOLDOWN_MINUTES = 30
+        assert db.record_transition(rid, True, 10.0) is True, "first crossing alerts"
+        # cross back out and in again, as an oscillating value does inside one bar
+        for _ in range(5):
+            assert db.record_transition(rid, False, 50.0) is False
+            assert db.record_transition(rid, True, 10.0) is False, \
+                "a re-crossing inside the gap must NOT alert again"
+        # state still reflects reality even while alerts are suppressed
+        with db._db() as c:
+            row = db._exec(c, "SELECT fired FROM rule_state WHERE rule_id=?", (rid,)).fetchone()
+        assert row["fired"] == 1, "the rule is latched even though the alert was suppressed"
+
+        # once the gap has elapsed, a genuine new crossing alerts again
+        stale = (datetime.now(db.ET) - timedelta(seconds=400)).isoformat()
+        db.record_transition(rid, False, 50.0)
+        with db._db(write=True) as c:
+            db._exec(c, "UPDATE rule_state SET last_fired_at=? WHERE rule_id=?", (stale, rid))
+        assert db.record_transition(rid, True, 10.0) is True, "past the gap, a crossing alerts"
+
+        # gap 0 restores pure edge-triggered firing (closed-bar deployments)
+        config.ALERT_MIN_GAP_SECONDS = 0
+        assert db.record_transition(rid, False, 50.0) is False
+        assert db.record_transition(rid, True, 10.0) is True, "gap=0 -> every edge fires"
+    finally:
+        config.ALERT_MIN_GAP_SECONDS = gap_original
+        config.RULE_COOLDOWN_MINUTES = cd_original
+    print("  ✓ live OK (provisional bar appended, degrades safely, flapping suppressed)")
 
 
 def test_delivery_outbox():
@@ -711,7 +817,7 @@ def main():
     tests = [test_config, test_indicators, test_conditions, test_market_calendar, test_db,
              test_user_isolation, test_sqlite_migration, test_notifier_dry_run,
              test_boundary_alignment, test_close_grace, test_cooldown_rearm,
-             test_delivery_outbox, test_engine_cycle,
+             test_live_price_evaluation, test_delivery_outbox, test_engine_cycle,
              test_backtest_and_watchlist, test_stream_aggregation, test_api_auth, test_ai]
     passed = failed = 0
     for t in tests:

@@ -307,10 +307,26 @@ def record_transition(rule_id, fired, value):
         if not fired:
             _exec(c, "UPDATE rule_state SET fired=0,last_value=? WHERE rule_id=?", (value, rule_id))
             return False
-        cur = _exec(c, "UPDATE rule_state SET fired=1,last_value=?,last_fired_at=? "
-                       "WHERE rule_id=? AND fired=0", (value, now, rule_id))
+        gap = config.ALERT_MIN_GAP_SECONDS
+        if gap > 0:
+            # Live (intra-bar) evaluation sees a value oscillate across its threshold
+            # many times inside one bar, and every crossing is a fresh False->True
+            # edge. Closed-bar evaluation cannot do that — a bar closes once — which
+            # is why the floor is 0 there and this collapses to the plain claim.
+            gap_cutoff = (now_dt - timedelta(seconds=gap)).isoformat()
+            cur = _exec(c, "UPDATE rule_state SET fired=1,last_value=?,last_fired_at=? "
+                           "WHERE rule_id=? AND fired=0 "
+                           "AND (last_fired_at IS NULL OR last_fired_at<=?)",
+                        (value, now, rule_id, gap_cutoff))
+        else:
+            cur = _exec(c, "UPDATE rule_state SET fired=1,last_value=?,last_fired_at=? "
+                           "WHERE rule_id=? AND fired=0", (value, now, rule_id))
         if cur.rowcount == 1:
             return True
+        # The edge may have been real but suppressed by the gap. Latch the state
+        # anyway, or the next cycle sees fired=0 and treats it as another new edge.
+        _exec(c, "UPDATE rule_state SET fired=1,last_value=? WHERE rule_id=? AND fired=0",
+              (value, rule_id))
         cooldown = config.RULE_COOLDOWN_MINUTES
         if cooldown > 0:
             cutoff = (now_dt - timedelta(minutes=cooldown)).isoformat()

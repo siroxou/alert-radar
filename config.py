@@ -111,6 +111,17 @@ MAX_ALIGN_SLEEP_SECONDS = int(os.environ.get("MAX_ALIGN_SLEEP_SECONDS", 40))
 # session can never fire. Evaluation only; the dashboard pill stays strict.
 CLOSE_GRACE_SECONDS = int(os.environ.get("CLOSE_GRACE_SECONDS", 120))
 
+# --- Live (intra-bar) evaluation -------------------------------------------
+# get_bars only ever returns CLOSED bars, so on its own a move is invisible until
+# its bar ends — averaging half the timeframe, ~7.5 min on a 15-min rule. With this
+# on, each cycle also pulls the live tape and evaluates against it, so a rule fires
+# on the move rather than on the bar boundary.
+#
+# The trade is real: a threshold crossed intra-bar may be back inside it by the
+# close, so some alerts describe a move that did not persist. ALERT_MIN_GAP_SECONDS
+# below is what keeps that from becoming an email storm.
+LIVE_PRICE = _env_bool("LIVE_PRICE", True)
+
 # --- Alerting behaviour ----------------------------------------------------
 # A rule latches on the False->True edge and, without this, stays silent for as
 # long as the condition holds — RSI parked below 15 for three days alerts once.
@@ -120,6 +131,12 @@ RULE_COOLDOWN_MINUTES = int(os.environ.get("RULE_COOLDOWN_MINUTES", 30))
 # being retried rather than wedging every later cycle behind it.
 DELIVERY_MAX_ATTEMPTS = int(os.environ.get("DELIVERY_MAX_ATTEMPTS", 5))
 DELIVERY_MAX_AGE_MINUTES = int(os.environ.get("DELIVERY_MAX_AGE_MINUTES", 120))
+# Minimum gap between two alerts from one rule, counted from the last one that
+# actually sent. Closed-bar evaluation does not need it — a bar closes once, so a
+# rule can fire at most once per bar. Live evaluation does: a value oscillating
+# around its threshold crosses it repeatedly within a single bar, and without a
+# floor every crossing is an email. 0 restores pure edge-triggered firing.
+ALERT_MIN_GAP_SECONDS = int(os.environ.get("ALERT_MIN_GAP_SECONDS", 300 if LIVE_PRICE else 0))
 
 # --- Market universe used to seed starter rules / demo (rules can use any symbol) ---
 SYMBOLS = ["AAPL", "NVDA", "AMZN", "IWM", "QQQ", "SPY"]

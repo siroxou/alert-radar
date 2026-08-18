@@ -80,3 +80,37 @@ def get_bars(symbol: str, multiplier: int, timespan: str, lookback_days: int) ->
         raise ValueError(f"no bars returned for {symbol} {tf}")
     bars.reverse()  # desc -> ascending (oldest first)
     return [b["c"] for b in bars]
+
+
+def latest_prices(symbols) -> dict:
+    """Current trade price per symbol — no waiting for a bar to close.
+
+    get_bars only ever returns CLOSED bars, so on its own a move is invisible until
+    its bar ends (up to 15 minutes on the default rules). This is the live tape:
+    IEX last-trade, real-time on the free plan, same as the bars feed.
+
+    Multi-symbol on purpose. One request covers the whole cycle's universe, so
+    enabling live evaluation costs a single extra call per cycle rather than one
+    per symbol — which matters because a cycle already fans out over every distinct
+    symbol x timeframe pair.
+
+    Never raises: a missing or failed price means that symbol falls back to
+    closed-bar evaluation, which is exactly the old behaviour.
+    """
+    symbols = sorted({s for s in symbols if SYMBOL_RE.fullmatch(s or "")})
+    if not symbols or not available():
+        return {}
+    try:
+        resp = requests.get(f"{BASE_URL}/trades/latest",
+                            params={"symbols": ",".join(symbols), "feed": config.ALPACA_FEED},
+                            headers=_headers(), timeout=10)
+        resp.raise_for_status()
+        trades = resp.json().get("trades") or {}
+    except Exception:
+        return {}
+    out = {}
+    for sym, trade in trades.items():
+        price = (trade or {}).get("p")
+        if isinstance(price, (int, float)) and price > 0:
+            out[sym] = float(price)
+    return out
